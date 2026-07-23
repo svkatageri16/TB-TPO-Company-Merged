@@ -1,0 +1,27 @@
+{
+  "footer": {
+    "brandDescription": "Bridging the gap between talented students and companies through AI-powered hiring.",
+    "quickLinks": "Quick Links",
+    "companyLinks": "Company Links",
+    "supportLegal": "Support & Legal",
+    "newsletter": "Newsletter",
+    "newsletterPlaceholder": "Enter your email",
+    "subscribe": "Subscribe",
+    "subscribeDesc": "Subscribe to our newsletter for job alerts and career updates.",
+    "allRightsReserved": "All rights reserved.",
+    "links": {
+      "dashboard": "Dashboard",
+      "jobs": "Jobs",
+      "resumeBuilder": "Resume Builder",
+      "mockInterview": "AI Mock Interview",
+      "appliedJobs": "Applied Jobs",
+      "postJob": "Post a Job",
+      "hiringDashboard": "Hiring Dashboard",
+      "talentSearch": "Talent Search",
+      "aboutUs": "About Us",
+      "contact": "Contact",
+      "privacyPolicy": "Privacy Policy",
+      "termsConditions": "Terms & Conditions"
+    }
+  }
+}

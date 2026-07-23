@@ -1,0 +1,11 @@
+{
+  "name": "TalentBridge",
+  "description": "An AI-powered recruitment platform connecting students and companies with automated resume analysis and mock interviews.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

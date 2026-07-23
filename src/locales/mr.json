@@ -1,0 +1,27 @@
+{
+  "footer": {
+    "brandDescription": "AI-चालित द्वारे प्रतिभावान विद्यार्थी आणि कंपन्यांमधील अंतर कमी करणे.",
+    "quickLinks": "द्रुत दुवे",
+    "companyLinks": "कंपनी दुवे",
+    "supportLegal": "समर्थन आणि कायदेशीर",
+    "newsletter": "न्यूजलेटर",
+    "newsletterPlaceholder": "तुमचा ईमेल टाका",
+    "subscribe": "सब्सक्राइब",
+    "subscribeDesc": "जॉब अलर्ट आणि करिअर अपडेट्ससाठी आमच्या न्यूजलेटरचे सदस्य व्हा.",
+    "allRightsReserved": "सर्व हक्क राखीव.",
+    "links": {
+      "dashboard": "डॅशबोर्ड",
+      "jobs": "नोकऱ्या",
+      "resumeBuilder": "रेझ्युमे बिल्डर",
+      "mockInterview": "AI मॉक इंटरव्ह्यू",
+      "appliedJobs": "अर्ज केलेल्या नोकऱ्या",
+      "postJob": "नोकरी पोस्ट करा",
+      "hiringDashboard": "भरती डॅशबोर्ड",
+      "talentSearch": "प्रतिभा शोध",
+      "aboutUs": "आमच्याबद्दल",
+      "contact": "संपर्क",
+      "privacyPolicy": "गोपनीयता धोरण",
+      "termsConditions": "नटी आणि शर्ती"
+    }
+  }
+}

@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  # 1. Nginx Reverse Proxy / Load Balancer Edge
+  nginx-edge:
+    image: nginx:alpine
+    container_name: talentbridge_nginx_edge
+    ports:
+      - "80:80"
+    volumes:
+      - ./server/config/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app-service-1
+      - app-service-2
+    networks:
+      - talentbridge_network
+    restart: unless-stopped
+
+  # 2. Replicated Express Application Cluster — Instance 1
+  app-service-1:
+    build: .
+    container_name: talentbridge_app_instance_1
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_HOST=db-primary
+      - DB_USER=root
+      - DB_PASSWORD=root
+      - DB_NAME=talentbridge
+      - REDIS_URL=redis://redis-broker:6379/0
+      - JWT_SECRET=talentbridge_high_entropy_cluster_private_key_secure_456
+    depends_on:
+      - db-primary
+      - redis-broker
+    networks:
+      - talentbridge_network
+    restart: unless-stopped
+
+  # 3. Replicated Express Application Cluster — Instance 2
+  app-service-2:
+    build: .
+    container_name: talentbridge_app_instance_2
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_HOST=db-primary
+      - DB_USER=root
+      - DB_PASSWORD=root
+      - DB_NAME=talentbridge
+      - REDIS_URL=redis://redis-broker:6379/0
+      - JWT_SECRET=talentbridge_high_entropy_cluster_private_key_secure_456
+    depends_on:
+      - db-primary
+      - redis-broker
+    networks:
+      - talentbridge_network
+    restart: unless-stopped
+
+  # 4. Background BullMQ Task Queue Worker — Handles AI evaluation workloads
+  task-worker:
+    build: .
+    container_name: talentbridge_task_worker
+    command: npm run start:worker # Custom separate process entrypoint for BullMQ processing
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=db-primary
+      - DB_USER=root
+      - DB_PASSWORD=root
+      - DB_NAME=talentbridge
+      - REDIS_URL=redis://redis-broker:6379/0
+    depends_on:
+      - db-primary
+      - redis-broker
+    networks:
+      - talentbridge_network
+    restart: unless-stopped
+
+  # 5. In-Memory Session and Queue Sync Store
+  redis-broker:
+    image: redis:7-alpine
+    container_name: talentbridge_redis_broker
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - talentbridge_network
+    restart: unless-stopped
+
+  # 6. Primary Database Service
+  db-primary:
+    image: mysql:8.0
+    container_name: talentbridge_mysql_db
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: talentbridge
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - talentbridge_network
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:
+
+networks:
+  talentbridge_network:
+    driver: bridge

@@ -1,0 +1,140 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-brand-primary: #0F172A;
+  --color-brand-accent: #2563EB;
+  --color-brand-bg: #F8FAFC;
+  
+  --color-premium-blue: #2563EB;
+  --color-premium-purple: #7C3AED;
+  --color-premium-emerald: #10B981;
+  --color-premium-orange: #F59E0B;
+  --color-premium-rose: #E11D48;
+}
+
+@layer base {
+  body {
+    @apply font-sans bg-brand-bg text-brand-primary antialiased;
+  }
+}
+
+.glass-card {
+  @apply bg-white/70 backdrop-blur-xl border border-white/40 shadow-[0_8px_32px_rgba(0,0,0,0.04)] rounded-[2rem] transition-all duration-500 hover:shadow-[0_12px_48px_rgba(0,0,0,0.06)];
+}
+
+.premium-shadow {
+  @apply shadow-[0_20px_50px_rgba(0,0,0,0.03)];
+}
+
+.btn-premium {
+  @apply px-8 py-4 bg-slate-900 text-white font-black uppercase tracking-widest text-[10px] rounded-[1.5rem] hover:scale-105 active:scale-95 transition-all duration-300 shadow-2xl shadow-slate-900/10 flex items-center justify-center gap-3;
+}
+
+.ai-gradient {
+  @apply bg-gradient-to-br from-premium-purple via-blue-600 to-premium-blue;
+}
+
+.growth-gradient {
+  @apply bg-gradient-to-br from-premium-emerald to-teal-500;
+}
+
+.action-gradient {
+  @apply bg-gradient-to-br from-premium-orange to-orange-600;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Clean minimal transparent scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+@keyframes float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+  100% { transform: translateY(0px); }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+/* Accessibility Modes */
+:root.contrast-high {
+  --color-brand-bg: #FFFFFF;
+  --color-brand-primary: #0F172A;
+  --color-brand-accent: #2563EB;
+}
+
+:root.contrast-max {
+  --color-brand-bg: #000000;
+  --color-brand-primary: #00FF00;
+  --color-brand-accent: #FFFF00;
+}
+
+/* Custom Autofill style overrides to prevent white filled patch/block */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: #ffffff !important;
+  color: #ffffff !important;
+  -webkit-box-shadow: 0 0 0px 1000px #0e1136 inset !important;
+  box-shadow: 0 0 0px 1000px #0e1136 inset !important;
+  caret-color: #ffffff !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* Custom Autofill style overrides for login input to remain simple white with black text */
+.login-input:-webkit-autofill,
+.login-input:-webkit-autofill:hover,
+.login-input:-webkit-autofill:focus,
+.login-input:-webkit-autofill:active {
+  -webkit-text-fill-color: #000000 !important;
+  color: #000000 !important;
+  -webkit-box-shadow: 0 0 0px 1000px #ffffff inset !important;
+  box-shadow: 0 0 0px 1000px #ffffff inset !important;
+  caret-color: #000000 !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* Hide scrollbar globally but preserve normal scrolling */
+body::-webkit-scrollbar,
+html::-webkit-scrollbar,
+.company-scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+body,
+html,
+.company-scrollbar-hidden {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+
