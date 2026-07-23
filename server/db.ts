@@ -33,8 +33,9 @@ if (mysqlUrl) {
 }
 
 let isProduction = process.env.NODE_ENV === "production";
-const mysqlRequested = (process.env.DB_TYPE === "mysql") || !!mysqlHost || !!process.env.MYSQL_URL || !!process.env.DATABASE_URL;
-let useMySQL = mysqlRequested; // Use MySQL if DB_TYPE is mysql, or DB_HOST or MYSQL_URL is set
+const dbTypeEnv = (process.env.DB_TYPE || "").toLowerCase();
+const mysqlRequested = (dbTypeEnv === "mysql") || (!dbTypeEnv && (!!mysqlHost || !!process.env.MYSQL_URL || !!process.env.DATABASE_URL));
+let useMySQL = dbTypeEnv === "sqlite" ? false : mysqlRequested;
 
 let pool: any = null;
 let sqliteDb: any = null;
@@ -197,6 +198,7 @@ export const queryLogger = async (queryText: string, execution: () => Promise<an
 
 export async function initDb() {
   if (useMySQL) {
+    console.log(`🗄️ Database Engine: MySQL | Host: ${mysqlHost || 'localhost'} | Port: ${mysqlPort || '3306'} | User: ${mysqlUser || 'not set'} | Database: ${mysqlDatabase || 'not set'}`);
     let connection;
     try {
       let retries = 5;
@@ -204,12 +206,20 @@ export async function initDb() {
       while (retries > 0) {
         try {
           connection = await pool.getConnection();
-          console.log("📡 Connected to MySQL Database");
+          console.log(`📡 Successfully connected to MySQL Database (${mysqlDatabase || 'default'})`);
           break;
         } catch (err: any) {
           retries--;
           console.warn(`⚠️ MySQL Connection attempt failed: ${err.message || err}. Retrying in ${delayMs / 1000}s... (${retries} attempts left)`);
-          if (retries === 0) throw err;
+          if (retries === 0) {
+            console.error("================================================================================");
+            console.error(`🚨 FATAL: MySQL connection failed after 5 retries!`);
+            console.error(`👉 Host: ${mysqlHost || 'localhost'}, Port: ${mysqlPort || '3306'}, Database: ${mysqlDatabase || 'not set'}`);
+            console.error(`👉 Error Details: ${err.message || err}`);
+            console.error(`👉 MySQL is configured; server startup is aborted (no SQLite fallback).`);
+            console.error("================================================================================");
+            throw err;
+          }
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }
       }

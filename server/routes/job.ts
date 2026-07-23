@@ -83,44 +83,6 @@ router.get("/", async (req, res) => {
   }
 });
 
-// Get all jobs managed by the authenticated company (including SUPER HR and SUB HR)
-router.get("/company-managed/all", authenticate, async (req: any, res) => {
-  try {
-    const userId = req.user.userId;
-
-    // First, find the company profile associated with this user
-    let companyId: number | null = null;
-    const [companyProfiles]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [userId]);
-    if (companyProfiles.length > 0) {
-      companyId = companyProfiles[0].id;
-    } else {
-      // Check if user is a SUB HR
-      const [hrProfiles]: any = await db.query("SELECT company_id FROM company_hr_profiles WHERE user_id = ?", [userId]);
-      if (hrProfiles.length > 0) {
-        companyId = hrProfiles[0].company_id;
-      } else {
-        return res.status(403).json({ success: false, message: "Company profile not found for authenticated user" });
-      }
-    }
-
-    await checkAndProcessJobExpirations();
-
-    const jobsQuery = `
-      SELECT J.*, C.company_name, C.logo_url,
-             (SELECT COUNT(*) FROM job_stages JS WHERE JS.job_id = J.id) as stage_count
-      FROM jobs J 
-      JOIN company_profiles C ON J.company_id = C.id 
-      WHERE J.company_id = ?
-    `;
-    const [jobs]: any = await db.query(jobsQuery, [companyId]);
-
-    res.json({ success: true, data: jobs });
-  } catch (error) {
-    console.error("Error fetching company-managed jobs:", error);
-    res.status(500).json({ success: false, message: "Error fetching jobs" });
-  }
-});
-
 // Create job with stages
 router.post("/", authenticate, async (req: any, res) => {
   const { 
@@ -1200,6 +1162,90 @@ router.get("/student/:studentId", async (req, res) => {
     res.json({ success: true, data: applications });
   } catch (error) {
     res.status(500).json({ success: false, message: "Error fetching applications" });
+  }
+});
+
+// GET /api/jobs/company-managed/all - Fetch all jobs belonging to authenticated company (Super HR) or assigned jobs (Sub HR)
+router.get("/company-managed/all", authenticate, async (req: any, res) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "User is not authenticated." });
+    }
+
+    await checkAndProcessJobExpirations();
+
+    let companyId = null;
+    let isSubHr = false;
+
+    // Check if user is a Sub HR
+    const [hrProfiles]: any = await db.query("SELECT * FROM company_hr_profiles WHERE user_id = ?", [userId]);
+    if (hrProfiles && hrProfiles.length > 0) {
+      isSubHr = true;
+      companyId = hrProfiles[0].company_id;
+    } else {
+      // Check if user is a Super HR / Company Profile owner
+      const [profiles]: any = await db.query("SELECT * FROM company_profiles WHERE user_id = ?", [userId]);
+      if (profiles && profiles.length > 0) {
+        companyId = profiles[0].id;
+      }
+    }
+
+    if (!companyId) {
+      return res.status(404).json({ success: false, message: "Company profile not found for authenticated user." });
+    }
+
+    let assignedJobIds: number[] | null = null;
+    if (isSubHr) {
+      const [assignments]: any = await db.query(
+        "SELECT job_id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ?",
+        [companyId, userId]
+      );
+      if (assignments.length === 0) {
+        return res.json({ success: true, data: [] });
+      }
+      assignedJobIds = assignments.map((a: any) => Number(a.job_id));
+    }
+
+    let sql = `
+      SELECT J.*, C.company_name, C.logo_url,
+             (SELECT COUNT(DISTINCT JA.id) FROM job_applications JA WHERE JA.job_id = J.id) as total_applicants,
+             (SELECT COUNT(DISTINCT JS.id) FROM job_stages JS WHERE JS.job_id = J.id) as stage_count
+      FROM jobs J
+      JOIN company_profiles C ON J.company_id = C.id
+      WHERE J.company_id = ?
+    `;
+    const params: any[] = [companyId];
+
+    if (assignedJobIds !== null && assignedJobIds.length > 0) {
+      sql += ` AND J.id IN (${assignedJobIds.map(() => '?').join(',')})`;
+      params.push(...assignedJobIds);
+    }
+
+    sql += ` ORDER BY J.created_at DESC`;
+
+    const [jobs]: any = await db.query(sql, params);
+
+    const formattedJobs = (jobs || []).map((j: any) => {
+      let skills = [];
+      if (j.skills_json) {
+        try {
+          skills = typeof j.skills_json === 'string' ? JSON.parse(j.skills_json) : j.skills_json;
+        } catch (e) {
+          skills = [];
+        }
+      }
+      return {
+        ...j,
+        skills,
+        applicant_count: j.total_applicants || 0
+      };
+    });
+
+    res.json({ success: true, data: formattedJobs });
+  } catch (error: any) {
+    console.error("Error in GET /api/jobs/company-managed/all:", error);
+    res.status(500).json({ success: false, message: "Error fetching company managed jobs: " + (error.message || error) });
   }
 });
 
