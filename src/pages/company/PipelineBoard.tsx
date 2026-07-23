@@ -237,29 +237,37 @@ export function PipelineBoard() {
           setAllApplicants(fetchedApplicants);
         }
       } else {
-        const res = await api.get(`/jobs/applicants/${selectedJobId}`);
-        if (res.data.success) {
-          const fetchedApplicants = (res.data.data.applicants || []).map(
-            (app: any) => {
-              const hasStage = (res.data.data.stages || []).some(
-                (cs: any) => cs.id === app.current_stage_id,
-              );
-              const statusVal = hasStage
-                ? app.current_stage_id.toString()
-                : app.status || "APPLIED";
-              return {
-                ...app,
-                raw_status: app.status,
-                status: statusVal,
-                job_title:
-                  companyJobs.find(
-                    (j: any) => j.id.toString() === selectedJobId,
-                  )?.title || app.job_title,
-              };
-            },
-          );
-          setAllApplicants(fetchedApplicants);
-          setCustomStages(res.data.data.stages || []);
+        try {
+          const res = await api.get(`/jobs/applicants/${selectedJobId}`);
+          if (res.data && res.data.success) {
+            const fetchedApplicants = (res.data.data.applicants || []).map(
+              (app: any) => {
+                const hasStage = (res.data.data.stages || []).some(
+                  (cs: any) => cs.id === app.current_stage_id,
+                );
+                const statusVal = hasStage
+                  ? app.current_stage_id.toString()
+                  : app.status || "APPLIED";
+                return {
+                  ...app,
+                  raw_status: app.status,
+                  status: statusVal,
+                  job_title:
+                    companyJobs.find(
+                      (j: any) => j.id.toString() === selectedJobId,
+                    )?.title || app.job_title,
+                };
+              },
+            );
+            setAllApplicants(fetchedApplicants);
+            setCustomStages(res.data.data.stages || []);
+          } else {
+            // Invalid or inaccessible job ID, fallback to ALL
+            setSelectedJobId("ALL");
+          }
+        } catch (err) {
+          console.error("Error loading specific job pipeline, falling back to ALL:", err);
+          setSelectedJobId("ALL");
         }
       }
     } catch (e) {
