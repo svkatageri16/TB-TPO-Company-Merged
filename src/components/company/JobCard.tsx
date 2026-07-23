@@ -1,5 +1,5 @@
 import React from 'react';
-import { MapPin, Users, Calendar, ChevronRight, Briefcase, Edit3 } from "lucide-react";
+import { MapPin, Users, Calendar, ChevronRight, Briefcase, Edit3, Octagon } from "lucide-react";
 import { Link } from "react-router-dom";
 
 interface JobCardProps {
@@ -21,98 +21,135 @@ export function JobCard({ job, onEndJob, onEditJob, onViewDetails, onAssignHR }:
   const isClosed = job.status === 'CLOSED' || isExpired;
   const applicantCount = job.total_applicants !== undefined ? job.total_applicants : (job.applicant_count || 0);
 
+  const formattedDeadline = isValidDeadline 
+    ? new Date(job.deadline).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric', year: 'numeric' })
+    : 'N/A';
+
   return (
-    <div className="bg-white rounded-[20px] border border-slate-100 p-5 flex flex-col sm:flex-row justify-between items-stretch group hover:border-blue-200 hover:shadow-lg hover:shadow-blue-500/5 transition-all w-full gap-5 h-full">
-      {/* Left Column: Job Info & View Details Link */}
-      <div className="flex-1 min-w-0 flex flex-col justify-between">
+    <div className="@container bg-white rounded-[24px] border border-slate-100 p-6 flex flex-col @[440px]:flex-row justify-between items-stretch group hover:border-blue-200 hover:shadow-xl hover:shadow-blue-500/5 transition-all w-full gap-6 h-full">
+      {/* Left Column: Job Info & Vertical Details */}
+      <div className="flex-1 min-w-0 flex flex-col justify-between @[440px]:pr-6 @[440px]:border-r @[440px]:border-slate-100/80 pb-4 @[440px]:pb-0 border-b @[440px]:border-b-0 border-slate-100">
         <div>
-          <div className="flex flex-wrap items-center gap-2 mb-2.5">
-            <h4 className="text-base font-black text-slate-800 uppercase tracking-tight truncate max-w-[280px]" title={job.title}>{job.title}</h4>
+          {/* Header Title & Active Badge */}
+          <div className="flex items-center gap-3 mb-4 flex-wrap">
+            <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight truncate max-w-[260px]" title={job.title}>
+              {job.title}
+            </h3>
             {isClosed ? (
-              <span className="px-2 py-0.5 bg-rose-50 text-rose-600 text-[8px] font-black uppercase rounded-md border border-rose-100">Ended</span>
+              <span className="px-3 py-1 bg-rose-50 text-rose-600 text-[10px] font-black uppercase rounded-full border border-rose-100 tracking-wider shrink-0">
+                Ended
+              </span>
             ) : (
-              <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 text-[8px] font-black uppercase rounded-md border border-emerald-100">Active</span>
-            )}
-          </div>
-          
-          <div className="grid grid-cols-2 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-            <span className="flex items-center gap-1.5 truncate"><MapPin size={12} className="text-slate-400 shrink-0" /> {job.location || 'Remote'}</span>
-            <span className="flex items-center gap-1.5 truncate"><Users size={12} className="text-slate-400 shrink-0" /> {applicantCount} Applicants</span>
-            <span className="flex items-center gap-1.5 truncate"><Briefcase size={12} className="text-slate-400 shrink-0" /> {job.openings || 1} Openings</span>
-            {isClosed && job.ended_at ? (
-              <span className="flex items-center gap-1.5 text-rose-500 truncate"><Calendar size={12} className="shrink-0" /> Ended: {new Date(job.ended_at).toLocaleDateString()}</span>
-            ) : (
-              <span className="flex items-center gap-1.5 text-slate-400 truncate"><Calendar size={12} className="shrink-0" /> Exp: {job.deadline ? new Date(job.deadline).toLocaleDateString() : 'N/A'}</span>
+              <span className="px-3 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-black uppercase rounded-full border border-emerald-100 tracking-wider shrink-0">
+                Active
+              </span>
             )}
           </div>
 
-          {/* View Details Link */}
-          {onViewDetails && (
-            <div className="mt-2.5">
-              <button 
-                type="button"
-                onClick={() => onViewDetails(job)}
-                className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors hover:underline cursor-pointer group/link"
-                id={`view-details-btn-${job.id}`}
-              >
-                <span>View job details</span>
-                <ChevronRight size={13} className="text-blue-600 group-hover/link:translate-x-0.5 transition-transform" />
-              </button>
+          {/* Vertical Job Details List */}
+          <div className="space-y-2.5 text-xs font-semibold text-slate-700">
+            {/* Location */}
+            <div className="flex items-center gap-3 pb-2 border-b border-slate-100/70">
+              <div className="w-7 h-7 bg-slate-50 text-slate-500 rounded-lg flex items-center justify-center shrink-0 border border-slate-100">
+                <MapPin size={14} className="text-blue-600" />
+              </div>
+              <span className="truncate">{job.location || 'Remote'}</span>
             </div>
-          )}
+
+            {/* Applicants */}
+            <div className="flex items-center gap-3 pb-2 border-b border-slate-100/70">
+              <div className="w-7 h-7 bg-slate-50 text-slate-500 rounded-lg flex items-center justify-center shrink-0 border border-slate-100">
+                <Users size={14} className="text-blue-600" />
+              </div>
+              <span className="truncate">{applicantCount} Applicants</span>
+            </div>
+
+            {/* Openings */}
+            <div className="flex items-center gap-3 pb-2 border-b border-slate-100/70">
+              <div className="w-7 h-7 bg-slate-50 text-slate-500 rounded-lg flex items-center justify-center shrink-0 border border-slate-100">
+                <Briefcase size={14} className="text-blue-600" />
+              </div>
+              <span className="truncate">{job.openings || 1} Openings</span>
+            </div>
+
+            {/* Deadline / Ended */}
+            <div className="flex items-center gap-3 pb-2 border-b border-slate-100/70">
+              <div className="w-7 h-7 bg-slate-50 text-slate-500 rounded-lg flex items-center justify-center shrink-0 border border-slate-100">
+                <Calendar size={14} className={isClosed ? "text-rose-500" : "text-blue-600"} />
+              </div>
+              <span className={`truncate ${isClosed ? "text-rose-600 font-bold" : ""}`}>
+                {isClosed && job.ended_at 
+                  ? `Ended: ${new Date(job.ended_at).toLocaleDateString()}`
+                  : `Exp: ${formattedDeadline}`}
+              </span>
+            </div>
+          </div>
         </div>
-        
-        {job.skills && job.skills.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-3">
-            {job.skills.slice(0, 3).map((s: string) => (
-              <span key={s} className="px-2 py-0.5 bg-slate-50 text-slate-500 text-[9px] font-bold rounded border border-slate-100 truncate max-w-[120px]">{s}</span>
-            ))}
-            {job.skills.length > 3 && (
-              <span className="px-1.5 py-0.5 bg-slate-50 text-slate-400 text-[9px] font-bold rounded border border-slate-100">+{job.skills.length - 3}</span>
-            )}
+
+        {/* View Details Link */}
+        {onViewDetails && (
+          <div className="mt-4 pt-1">
+            <button 
+              type="button"
+              onClick={() => onViewDetails(job)}
+              className="inline-flex items-center gap-1.5 text-xs font-black text-blue-600 hover:text-blue-700 transition-colors cursor-pointer group/link hover:underline"
+              id={`view-details-btn-${job.id}`}
+            >
+              <span>View job details</span>
+              <ChevronRight size={15} className="text-blue-600 group-hover/link:translate-x-1 transition-transform" />
+            </button>
           </div>
         )}
       </div>
-      
-      {/* Right Column: Button Stack */}
-      <div className="flex flex-col gap-2 w-full sm:w-[150px] shrink-0 justify-start">
+
+      {/* Right Column: Evenly Aligned Action Stack */}
+      <div className="flex flex-col gap-2.5 w-full @[440px]:w-[170px] shrink-0 justify-center">
+        {/* Track Pipeline */}
         <Link 
           to={`/company/pipeline?jobId=${job.id}`}
-          className="w-full py-2 bg-slate-900 text-white rounded-xl font-black uppercase tracking-widest text-[9px] hover:bg-blue-600 transition-all flex items-center justify-center gap-1 shadow-sm"
+          className="w-full h-11 bg-slate-950 text-white hover:bg-blue-600 rounded-2xl font-black uppercase tracking-wider text-[10px] transition-all flex items-center justify-center gap-2 shadow-sm shrink-0"
         >
-          {isClosed ? "View History" : "Track Pipeline"} <ChevronRight size={12} strokeWidth={3} />
+          <span>{isClosed ? "View History" : "Track Pipeline"}</span>
+          <ChevronRight size={14} strokeWidth={3} />
         </Link>
 
+        {/* Edit Job Details */}
         {!isClosed && onEditJob && (
           <button 
             type="button"
             onClick={() => onEditJob(job)}
-            className="w-full py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 transition-all font-black uppercase tracking-widest text-[9px] rounded-xl border border-blue-100 flex items-center justify-center gap-1.5 cursor-pointer"
+            className="w-full h-11 bg-white hover:bg-blue-50/60 text-blue-600 border border-blue-200/80 rounded-2xl font-black uppercase tracking-wider text-[10px] transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer shadow-sm"
           >
-            <Edit3 size={12} /> Edit Job Details
+            <Edit3 size={14} />
+            <span>Edit Job Details</span>
           </button>
         )}
 
+        {/* Assign HRs */}
         {!isClosed && onAssignHR && (
           <button 
             type="button"
             onClick={() => onAssignHR(job)}
-            className="w-full py-2 bg-indigo-50 text-[#4c51bf] hover:bg-indigo-100 transition-all font-black uppercase tracking-widest text-[9px] rounded-xl border border-indigo-100 flex items-center justify-center gap-1 cursor-pointer"
+            className="w-full h-11 bg-indigo-50/80 hover:bg-indigo-100/80 text-indigo-700 border border-indigo-100 rounded-2xl font-black uppercase tracking-wider text-[10px] transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer shadow-sm"
           >
-            Assign HRs
+            <Users size={14} />
+            <span>Assign HRs</span>
           </button>
         )}
 
+        {/* End Posting */}
         {!isClosed && onEndJob && (
           <button 
             type="button"
             onClick={() => onEndJob(job.id)}
-            className="w-full py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 transition-all font-black uppercase tracking-widest text-[9px] rounded-xl border border-rose-100 flex items-center justify-center gap-1 cursor-pointer"
+            className="w-full h-11 bg-rose-50/80 hover:bg-rose-100/80 text-rose-600 border border-rose-100 rounded-2xl font-black uppercase tracking-wider text-[10px] transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer shadow-sm"
           >
-            End Posting
+            <Octagon size={14} />
+            <span>End Posting</span>
           </button>
         )}
       </div>
     </div>
   );
 }
+
