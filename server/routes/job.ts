@@ -83,6 +83,44 @@ router.get("/", async (req, res) => {
   }
 });
 
+// Get all jobs managed by the authenticated company (including SUPER HR and SUB HR)
+router.get("/company-managed/all", authenticate, async (req: any, res) => {
+  try {
+    const userId = req.user.userId;
+
+    // First, find the company profile associated with this user
+    let companyId: number | null = null;
+    const [companyProfiles]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [userId]);
+    if (companyProfiles.length > 0) {
+      companyId = companyProfiles[0].id;
+    } else {
+      // Check if user is a SUB HR
+      const [hrProfiles]: any = await db.query("SELECT company_id FROM company_hr_profiles WHERE user_id = ?", [userId]);
+      if (hrProfiles.length > 0) {
+        companyId = hrProfiles[0].company_id;
+      } else {
+        return res.status(403).json({ success: false, message: "Company profile not found for authenticated user" });
+      }
+    }
+
+    await checkAndProcessJobExpirations();
+
+    const jobsQuery = `
+      SELECT J.*, C.company_name, C.logo_url,
+             (SELECT COUNT(*) FROM job_stages JS WHERE JS.job_id = J.id) as stage_count
+      FROM jobs J 
+      JOIN company_profiles C ON J.company_id = C.id 
+      WHERE J.company_id = ?
+    `;
+    const [jobs]: any = await db.query(jobsQuery, [companyId]);
+
+    res.json({ success: true, data: jobs });
+  } catch (error) {
+    console.error("Error fetching company-managed jobs:", error);
+    res.status(500).json({ success: false, message: "Error fetching jobs" });
+  }
+});
+
 // Create job with stages
 router.post("/", authenticate, async (req: any, res) => {
   const { 
