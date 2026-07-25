@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import api from '../../services/api.ts';
-import { Search, Plus, Briefcase, History, SlidersHorizontal, Trash2, MapPin, Calendar, Users } from 'lucide-react';
+import { Search, Plus, Briefcase, History, SlidersHorizontal, Trash2, MapPin, Calendar, Users, LayoutGrid, List } from 'lucide-react';
 import { JobCard } from '../../components/company/JobCard.tsx';
 import { EditJobModal } from '../../components/company/EditJobModal.tsx';
 import { ViewJobDetailsModal } from '../../components/company/ViewJobDetailsModal.tsx';
@@ -14,6 +14,7 @@ export function ActiveJobsPage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'active' | 'history'>('active');
+  const [viewMode, setViewMode] = useState<'card' | 'table'>('card');
   const [editingJob, setEditingJob] = useState<any | null>(null);
   const [viewingJob, setViewingJob] = useState<any | null>(null);
 
@@ -244,13 +245,13 @@ export function ActiveJobsPage() {
   });
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <div>
-          <h1 className="text-3xl font-black text-slate-900 uppercase tracking-tight">
+          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 uppercase tracking-tight">
             {activeTab === 'active' ? "Active Postings" : "Job History"}
           </h1>
-          <p className="text-slate-500 font-medium text-sm italic mt-1">
+          <p className="text-slate-500 font-medium text-xs sm:text-sm italic mt-0.5">
             {activeTab === 'active' 
               ? "Manage your open roles and track recruitment progress." 
               : "Review previous, inactive, or ended job postings."}
@@ -264,11 +265,11 @@ export function ActiveJobsPage() {
               toast.error("Your company profile is pending verification. Please wait for Admin approval.");
             }
           }}
-          className={`flex items-center gap-3 px-8 py-4 rounded-[20px] font-black uppercase tracking-widest text-[10px] transition-all active:scale-95 ${
-            isFrozen ? "bg-slate-300 text-slate-500 cursor-not-allowed shadow-none" : "bg-blue-600 text-white shadow-2xl shadow-blue-500/20 hover:bg-blue-700"
+          className={`flex items-center gap-2.5 px-6 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all active:scale-95 shrink-0 ${
+            isFrozen ? "bg-slate-300 text-slate-500 cursor-not-allowed shadow-none" : "bg-blue-600 text-white shadow-xl shadow-blue-500/20 hover:bg-blue-700"
           }`}
         >
-          <Plus size={18} strokeWidth={3} /> Post New Role
+          <Plus size={16} strokeWidth={3} /> Post New Role
         </Link>
       </div>
 
@@ -276,28 +277,28 @@ export function ActiveJobsPage() {
       <div className="flex border-b border-slate-200">
         <button
           onClick={() => setActiveTab('active')}
-          className={`px-6 py-4 font-black uppercase tracking-widest text-[11px] transition-all border-b-2 cursor-pointer flex items-center gap-2 ${
+          className={`px-5 py-2.5 font-black uppercase tracking-widest text-[10px] sm:text-[11px] transition-all border-b-2 cursor-pointer flex items-center gap-2 ${
             activeTab === 'active'
               ? 'border-blue-600 text-blue-600'
               : 'border-transparent text-slate-400 hover:text-slate-600'
           }`}
         >
-          <Briefcase size={16} /> Active Roles
+          <Briefcase size={15} /> Active Roles
         </button>
         <button
           onClick={() => setActiveTab('history')}
-          className={`px-6 py-4 font-black uppercase tracking-widest text-[11px] transition-all border-b-2 cursor-pointer flex items-center gap-2 ${
+          className={`px-5 py-2.5 font-black uppercase tracking-widest text-[10px] sm:text-[11px] transition-all border-b-2 cursor-pointer flex items-center gap-2 ${
             activeTab === 'history'
               ? 'border-blue-600 text-blue-600'
               : 'border-transparent text-slate-400 hover:text-slate-600'
           }`}
         >
-          <History size={16} /> Job History
+          <History size={15} /> Job History
         </button>
       </div>
 
-      {/* Search and Filters Toggle Row */}
-      <div className="flex flex-col sm:flex-row gap-3 items-center">
+      {/* Search, View Mode Toggle, and Filters Toggle Row */}
+      <div className="flex flex-col sm:flex-row gap-2.5 items-center">
         <div className="relative flex-1 w-full group">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-600 transition-colors" size={18} />
           <input 
@@ -305,12 +306,43 @@ export function ActiveJobsPage() {
             placeholder="Search roles by title, location, or skills..." 
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white border border-slate-100 rounded-2xl pl-12 pr-4 py-3.5 text-sm font-medium outline-none focus:ring-4 focus:ring-blue-500/5 focus:border-blue-600/20 transition-all shadow-sm"
+            className="w-full bg-white border border-slate-100 rounded-2xl pl-12 pr-4 py-3 text-sm font-medium outline-none focus:ring-4 focus:ring-blue-500/5 focus:border-blue-600/20 transition-all shadow-sm"
           />
         </div>
+
+        {/* View Mode Toggle */}
+        <div className="flex items-center bg-slate-100/80 p-1 rounded-2xl border border-slate-200/80 shrink-0 self-stretch sm:self-auto justify-center">
+          <button
+            type="button"
+            onClick={() => setViewMode('card')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+              viewMode === 'card'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+            title="Card View"
+          >
+            <LayoutGrid size={14} />
+            <span className="hidden sm:inline">Grid</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('table')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+              viewMode === 'table'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+            title="Table View"
+          >
+            <List size={14} />
+            <span className="hidden sm:inline">Table</span>
+          </button>
+        </div>
+
         <button 
           onClick={() => setShowFilters(!showFilters)}
-          className={`px-6 py-3.5 rounded-2xl border font-black uppercase tracking-widest text-[10px] transition-all flex items-center gap-2 cursor-pointer shrink-0 w-full sm:w-auto justify-center ${
+          className={`px-5 py-3 rounded-2xl border font-black uppercase tracking-widest text-[10px] transition-all flex items-center gap-2 cursor-pointer shrink-0 w-full sm:w-auto justify-center ${
             showFilters || filterDesignation || filterLocation || filterJobType !== 'All' || filterExpLevel !== 'All' || filterExpiry !== 'All' || filterApplicantRange !== 'All' || filterSkill
               ? 'bg-blue-50 border-blue-200 text-blue-600 shadow-sm'
               : 'bg-white border-slate-100 text-slate-500 hover:bg-slate-50'
@@ -440,33 +472,175 @@ export function ActiveJobsPage() {
         </div>
       )}
 
-      {/* Three Job Cards Per Row Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-        {filteredJobs.map(job => (
-          <JobCard 
-            key={job.id} 
-            job={job} 
-            onEndJob={handleEndJob} 
-            onEditJob={handleEditJobClick} 
-            onViewDetails={(j) => setViewingJob(j)}
-            onAssignHR={profile?.isSubHr ? undefined : fetchSubHrsAndAssignments}
-          />
-        ))}
-        
-        {filteredJobs.length === 0 && !loading && (
-          <div className="col-span-1 md:col-span-2 xl:col-span-3 py-20 text-center bg-white rounded-[40px] border border-slate-100 border-dashed">
-            <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center text-slate-300 mx-auto mb-6">
-               <Briefcase size={40} />
+      {/* Job Postings Grid or Table View */}
+      {viewMode === 'card' ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {filteredJobs.map(job => (
+            <JobCard 
+              key={job.id} 
+              job={job} 
+              onEndJob={handleEndJob} 
+              onEditJob={handleEditJobClick} 
+              onViewDetails={(j) => setViewingJob(j)}
+              onAssignHR={profile?.isSubHr ? undefined : fetchSubHrsAndAssignments}
+            />
+          ))}
+          
+          {filteredJobs.length === 0 && !loading && (
+            <div className="col-span-1 md:col-span-2 xl:col-span-3 py-20 text-center bg-white rounded-[40px] border border-slate-100 border-dashed">
+              <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center text-slate-300 mx-auto mb-6">
+                 <Briefcase size={40} />
+              </div>
+              <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
+                {activeTab === 'active' ? "No active roles found" : "No historical roles found"}
+              </h3>
+              <p className="text-slate-400 font-bold text-xs uppercase tracking-widest mt-2">
+                {activeTab === 'active' ? "Try adjusting your search filters or posting a new position." : "Ended postings will appear here."}
+              </p>
             </div>
-            <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
-              {activeTab === 'active' ? "No active roles found" : "No historical roles found"}
-            </h3>
-            <p className="text-slate-400 font-bold text-xs uppercase tracking-widest mt-2">
-              {activeTab === 'active' ? "Try adjusting your search filters or posting a new position." : "Ended postings will appear here."}
-            </p>
+          )}
+        </div>
+      ) : (
+        <div className="bg-white rounded-3xl border border-slate-150 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse min-w-[900px]">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-100 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  <th className="py-3.5 px-5">Job Title</th>
+                  <th className="py-3.5 px-3">Status</th>
+                  <th className="py-3.5 px-3">Location</th>
+                  <th className="py-3.5 px-3 text-center">Applicants</th>
+                  <th className="py-3.5 px-3 text-center">Openings</th>
+                  <th className="py-3.5 px-3">Expiry Date</th>
+                  <th className="py-3.5 px-5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-700">
+                {filteredJobs.map(job => {
+                  const isValidDeadline = job.deadline && 
+                    job.deadline !== 'null' && 
+                    job.deadline !== 'undefined' && 
+                    job.deadline.toString().trim() !== '' && 
+                    job.deadline !== '0000-00-00' && 
+                    !isNaN(new Date(job.deadline).getTime());
+                  const isExpired = isValidDeadline && new Date(job.deadline).setHours(23, 59, 59, 999) < new Date().getTime();
+                  const isClosed = job.status === 'CLOSED' || isExpired;
+                  const applicantCount = job.total_applicants !== undefined ? job.total_applicants : (job.applicant_count || 0);
+                  const formattedDeadline = isValidDeadline
+                    ? new Date(job.deadline).toLocaleDateString('en-GB')
+                    : 'N/A';
+
+                  return (
+                    <tr key={job.id} className="hover:bg-slate-50/70 transition-colors">
+                      <td className="py-3.5 px-5">
+                        <span className="font-bold text-slate-900 block truncate max-w-[220px]" title={job.title}>
+                          {job.title}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-3">
+                        {isClosed ? (
+                          <span className="inline-block px-2.5 py-0.5 bg-rose-50 text-rose-600 text-[9px] font-black uppercase rounded-full border border-rose-100 tracking-wider">
+                            Ended
+                          </span>
+                        ) : (
+                          <span className="inline-block px-2.5 py-0.5 bg-emerald-50 text-emerald-600 text-[9px] font-black uppercase rounded-full border border-emerald-100 tracking-wider">
+                            Active
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 text-slate-600">
+                          <MapPin size={13} className="text-blue-600 shrink-0" />
+                          <span className="truncate max-w-[130px]" title={job.location || 'Remote'}>
+                            {job.location || 'Remote'}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-3 text-center whitespace-nowrap">
+                        <span className="inline-flex items-center justify-center px-2.5 py-1 bg-slate-100 rounded-lg text-slate-800 font-bold text-xs min-w-[32px]">
+                          {applicantCount}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-3 text-center whitespace-nowrap">
+                        <span className="inline-flex items-center justify-center px-2.5 py-1 bg-slate-100 rounded-lg text-slate-800 font-bold text-xs min-w-[32px]">
+                          {job.openings || 1}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 text-slate-600">
+                          <Calendar size={13} className={isClosed ? "text-rose-500 shrink-0" : "text-blue-600 shrink-0"} />
+                          <span className={isClosed ? "text-rose-600 font-bold" : ""}>
+                            {isClosed && job.ended_at 
+                              ? `Ended: ${new Date(job.ended_at).toLocaleDateString('en-GB')}`
+                              : formattedDeadline}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Link
+                            to={`/company/pipeline?jobId=${job.id}`}
+                            className="px-3 py-1.5 bg-slate-900 text-white hover:bg-blue-600 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
+                          >
+                            Pipeline
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => setViewingJob(job)}
+                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                          >
+                            View
+                          </button>
+                          {!isClosed && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleEditJobClick(job)}
+                                className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-100 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                              >
+                                Edit
+                              </button>
+                              {!profile?.isSubHr && (
+                                <button
+                                  type="button"
+                                  onClick={() => fetchSubHrsAndAssignments(job)}
+                                  className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-100 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                                >
+                                  Assign HR
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleEndJob(job.id)}
+                                className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-100 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                              >
+                                End
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+          {filteredJobs.length === 0 && !loading && (
+            <div className="py-16 text-center">
+              <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-300 mx-auto mb-4">
+                <Briefcase size={32} />
+              </div>
+              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">
+                {activeTab === 'active' ? "No active roles found" : "No historical roles found"}
+              </h3>
+              <p className="text-slate-400 font-bold text-xs uppercase tracking-widest mt-1">
+                {activeTab === 'active' ? "Try adjusting your search filters or posting a new position." : "Ended postings will appear here."}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       <EditJobModal 
         job={editingJob} 

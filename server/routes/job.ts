@@ -1472,6 +1472,114 @@ router.patch("/:id", authenticate, async (req: any, res) => {
   }
 });
 
+// Manually end job posting
+router.put("/:id/end", authenticate, async (req: any, res) => {
+  const jobId = req.params.id;
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "User is not authenticated." });
+    }
+
+    let companyId = null;
+    let roleType = "SUPER_HR";
+    let actorName = req.user.email || "Company User";
+
+    const [hrProfiles]: any = await db.query(
+      "SELECT h.*, u.status AS user_status FROM company_hr_profiles h JOIN users u ON h.user_id = u.id WHERE h.user_id = ?",
+      [userId]
+    );
+    if (hrProfiles && hrProfiles.length > 0) {
+      const hr = hrProfiles[0];
+      if (hr.user_status && hr.user_status !== 'ACTIVE') {
+        return res.status(403).json({ success: false, message: "Forbidden: Sub HR profile is inactive." });
+      }
+
+      roleType = "SUB_HR";
+      companyId = hr.company_id;
+      actorName = `${hr.designation || "Sub HR"} (${req.user.email})`;
+
+      const permissions = JSON.parse(hr.permissions || "[]");
+      if (!permissions.includes("Edit Jobs")) {
+        return res.status(403).json({ success: false, message: "Forbidden: You do not have permission to end jobs." });
+      }
+
+      const [assignments]: any = await db.query(
+        "SELECT id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND job_id = ?",
+        [companyId, userId, jobId]
+      );
+      if (!assignments || assignments.length === 0) {
+        return res.status(403).json({ success: false, message: "Forbidden: You are not assigned to manage this job." });
+      }
+    } else {
+      const [profiles]: any = await db.query("SELECT * FROM company_profiles WHERE user_id = ?", [userId]);
+      if (profiles && profiles.length > 0) {
+        companyId = profiles[0].id;
+        actorName = `Super HR (${req.user.email})`;
+      }
+    }
+
+    if (!companyId) {
+      return res.status(404).json({ success: false, message: "Company profile not found for authenticated user." });
+    }
+
+    const [jobs]: any = await db.query("SELECT * FROM jobs WHERE id = ? AND company_id = ?", [jobId, companyId]);
+    if (!jobs[0]) {
+      return res.status(404).json({ success: false, message: "Job post not found or you are not authorized to modify it." });
+    }
+
+    const job = jobs[0];
+
+    // Reject if job is already CLOSED, ended_at is set, or deadline is expired
+    const isValidDeadline = job.deadline && 
+      job.deadline !== 'null' && 
+      job.deadline !== 'undefined' && 
+      job.deadline.toString().trim() !== '' && 
+      job.deadline !== '0000-00-00' && 
+      !isNaN(new Date(job.deadline).getTime());
+    const isExpired = isValidDeadline && new Date(job.deadline).getTime() < new Date().getTime();
+
+    if (job.status === 'CLOSED' || job.ended_at !== null || isExpired) {
+      return res.status(400).json({ success: false, message: "Job posting is already closed, ended, or expired." });
+    }
+
+    const now = new Date();
+    const [updateResult]: any = await db.query(
+      "UPDATE jobs SET status = 'CLOSED', ended_at = ?, pipeline_ended_at = ? WHERE id = ? AND company_id = ? AND status = 'OPEN' AND ended_at IS NULL",
+      [now, now, jobId, companyId]
+    );
+
+    const affectedRows = updateResult?.affectedRows ?? updateResult?.changes ?? 0;
+    if (affectedRows !== 1) {
+      return res.status(400).json({ success: false, message: "Failed to end job posting. Job may already be closed or ended." });
+    }
+
+    // Audit log - inserted ONLY after successful job update
+    try {
+      await db.query(`
+        INSERT INTO company_audit_logs (
+          company_id, actor_user_id, actor_name, actor_role, action_type, module, description, target_type, target_id, metadata_json
+        ) VALUES (?, ?, ?, ?, 'END_JOB', 'Jobs', ?, 'jobs', ?, ?)
+      `, [
+        companyId,
+        userId,
+        actorName,
+        roleType,
+        `Manually ended job posting "${job.title}".`,
+        Number(jobId),
+        JSON.stringify({ status: 'CLOSED', ended_at: now })
+      ]);
+    } catch (auditErr) {
+      console.error("Error inserting company audit log:", auditErr);
+    }
+
+    return res.json({ success: true, message: "Job posting ended successfully." });
+  } catch (error: any) {
+    console.error("Error ending job posting:", error);
+    return res.status(500).json({ success: false, message: error.message || "Internal server error." });
+  }
+});
+
 // Get all drops for the authenticated company
 router.get("/drops/all", authenticate, async (req: any, res) => {
   try {
