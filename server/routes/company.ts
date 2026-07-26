@@ -946,8 +946,8 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
       // Fetch student details
       const [studentData]: any = await db.query(`
         SELECT SP.full_name, U.email 
-        FROM student_profiles SP
-        JOIN users U ON SP.user_id = U.id
+        FROM users U
+        LEFT JOIN student_profiles SP ON U.id = SP.user_id
         WHERE U.id = ?
       `, [candUserId]);
 
@@ -1082,6 +1082,8 @@ router.get("/recommendations/notified", authenticate, async (req: any, res) => {
         const assignedJobIds = assignments.map((a: any) => a.job_id);
         query += ` AND RN.job_id IN (${assignedJobIds.map(() => '?').join(',')})`;
         params.push(...assignedJobIds);
+      } else {
+        query += ` AND 1 = 0`;
       }
     }
 

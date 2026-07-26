@@ -156,6 +156,7 @@ export function RecommendationsTab() {
       setErrorMsg(err.response?.data?.message || "Error communicating with the recruitment server.");
     } finally {
       setLoadingJobs(false);
+      fetchNotifiedStudents();
     }
   };
 
