@@ -115,6 +115,9 @@ export function JobPostingPage() {
     };
   }, []);
 
+  // Substep navigation for multi-part steps (Steps 2, 3, 4)
+  const [subStep, setSubStep] = useState<1 | 2>(1);
+
   const isFormDirty = () => {
     return (
       formData.title.trim() !== "" ||
@@ -143,7 +146,17 @@ export function JobPostingPage() {
     if (!formData.location.trim()) {
       newErrors.location = "Location & Workplace is required.";
     }
-    
+    const openingsNum = parseInt(formData.openings?.toString() || "1");
+    if (isNaN(openingsNum) || openingsNum < 1 || openingsNum > 999) {
+      newErrors.openings = "Number of Openings must be between 1 and 999.";
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const validateStep2A = () => {
+    const newErrors: Record<string, string> = {};
     const desc = formData.description.trim();
     if (!desc) {
       newErrors.description = "Job Description is required.";
@@ -155,6 +168,18 @@ export function JobPostingPage() {
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
+  };
+
+  const validateStep2 = () => {
+    return validateStep2A();
+  };
+
+  const validateStep3 = () => {
+    if (stages.length < 2) {
+      toast.error("Please define at least 2 stages for your recruitment pipeline.");
+      return false;
+    }
+    return true;
   };
 
   // Hiring Stages State
@@ -203,7 +228,7 @@ export function JobPostingPage() {
     setIsGeneratingAI(field);
     
     // Simulate AI generation delay
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1500));
     
     let generated = "";
     if (field === 'description') {
@@ -254,30 +279,36 @@ export function JobPostingPage() {
   };
 
   const handleSubmit = async () => {
+    if (loading) return;
     if (isFrozen) {
       toast.error("Your company profile is pending verification. Please wait for Admin approval.");
       return;
     }
     if (!formData.title.trim()) {
       toast.error("Job Title is required.");
+      setStep(1);
       return;
     }
     if (!formData.location.trim()) {
       toast.error("Location & Workplace is required.");
+      setStep(1);
       return;
     }
     if (!formData.description.trim()) {
       toast.error("Job Description is required.");
+      setStep(2);
       return;
     }
     if (!formData.deadline) {
       toast.error("Application End Deadline is required.");
+      setStep(4);
       return;
     }
 
     const openingsNum = parseInt(formData.openings?.toString() || "1");
     if (isNaN(openingsNum) || openingsNum < 1 || openingsNum > 999) {
       toast.error("Number of Openings must be between 1 and 999.");
+      setStep(1);
       return;
     }
 
@@ -285,19 +316,23 @@ export function JobPostingPage() {
     const deadD = new Date(formData.deadline);
     if (isNaN(startD.getTime())) {
       toast.error("Invalid Application Start Date.");
+      setStep(4);
       return;
     }
     if (isNaN(deadD.getTime())) {
       toast.error("Invalid Application End Deadline.");
+      setStep(4);
       return;
     }
     if (deadD < startD) {
       toast.error("Application End Deadline cannot be before Start Date.");
+      setStep(4);
       return;
     }
 
     if (stages.length < 2) {
       toast.error("Please define at least 2 stages for your recruitment pipeline.");
+      setStep(3);
       return;
     }
 
@@ -315,7 +350,6 @@ export function JobPostingPage() {
         }))
       });
       toast.success("Job Opportunity published successfully!");
-      // Dispatch refresh events to dynamically update mounted dashboards, pipelines, etc.
       window.dispatchEvent(new CustomEvent('vega:job-created'));
       window.dispatchEvent(new CustomEvent('vega:pipeline-updated'));
       
@@ -330,77 +364,110 @@ export function JobPostingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-20 font-sans">
-      <div className="max-w-[1200px] mx-auto px-6 py-10">
+    <div className="w-full flex-1 min-h-0 flex flex-col bg-slate-50 font-sans">
+      <div className="max-w-[1400px] w-full mx-auto px-4 lg:px-6 py-2 flex flex-col min-h-0 flex-1">
         
         {/* Header Navigation */}
-        <header className="flex justify-between items-center mb-8 bg-white p-4 px-6 rounded-2xl border border-slate-200 shadow-sm sticky top-4 z-40">
+        <header className="flex justify-between items-center bg-white p-3.5 px-6 rounded-2xl border border-slate-200 shadow-sm shrink-0 mb-4 z-40">
           <button onClick={handleClose} className="flex items-center gap-2 text-slate-500 hover:text-rose-600 transition-all font-black text-[11px] uppercase tracking-widest cursor-pointer">
             <ChevronLeft size={16} /> Cancel & Exit
           </button>
+          
           <div className="flex gap-4 items-center">
-            <div className="flex gap-2.5 items-center">
-              {[1, 2, 3].map(s => (
-                <div key={s} className="flex items-center">
-                   <div className={`h-8 px-4 rounded-xl flex items-center justify-center font-bold text-xs transition-all ${step === s ? 'bg-indigo-600 text-white shadow-md' : step > s ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-400'}`}>
-                      {s === 1 ? 'Details' : s === 2 ? 'Pipeline' : 'Rules & Publish'}
-                   </div>
-                   {s < 3 && <div className={`w-6 h-px mx-1 ${step > s ? 'bg-indigo-300' : 'bg-slate-200'}`} />}
+            {/* 4-Step Indicator */}
+            <div className="flex gap-1.5 sm:gap-2.5 items-center">
+              {[
+                { num: 1, label: 'Basic Info' },
+                { num: 2, label: 'Content' },
+                { num: 3, label: 'ATS Workflow' },
+                { num: 4, label: 'Review & Publish' }
+              ].map(s => (
+                <div key={s.num} className="flex items-center">
+                   <button 
+                     onClick={() => {
+                       if (s.num < step) { setStep(s.num); setSubStep(1); }
+                       else if (s.num === 2 && validateStep1()) { setStep(2); setSubStep(1); }
+                       else if (s.num === 3 && validateStep1() && validateStep2()) { setStep(3); setSubStep(1); }
+                       else if (s.num === 4 && validateStep1() && validateStep2() && validateStep3()) { setStep(4); setSubStep(1); }
+                     }}
+                     className={`h-7 sm:h-8 px-2.5 sm:px-3.5 rounded-xl flex items-center justify-center font-bold text-[10px] sm:text-xs transition-all cursor-pointer ${step === s.num ? 'bg-indigo-600 text-white shadow-md' : step > s.num ? 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200' : 'bg-slate-100 text-slate-400'}`}
+                   >
+                      <span className="hidden sm:inline mr-1">{s.num}.</span> {s.label}
+                   </button>
+                   {s.num < 4 && <div className={`w-3 sm:w-5 h-px mx-0.5 sm:mx-1 ${step > s.num ? 'bg-indigo-300' : 'bg-slate-200'}`} />}
                 </div>
               ))}
             </div>
             <button onClick={handleClose} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer" title="Cancel creation">
-              <X size={20} />
+              <X size={18} />
             </button>
           </div>
         </header>
 
-        <div className="flex gap-8 items-start">
+        <div className="flex gap-6 items-start flex-1 min-h-0 overflow-hidden">
            
            {/* Main Content Area */}
            <motion.div 
-             initial={{ opacity: 0, y: 20 }}
+             initial={{ opacity: 0, y: 10 }}
              animate={{ opacity: 1, y: 0 }}
-             className="flex-1 bg-white rounded-[32px] border border-slate-200 shadow-2xl shadow-indigo-900/5 overflow-hidden"
+             className="flex-1 bg-white rounded-[24px] sm:rounded-[28px] border border-slate-200 shadow-xl shadow-indigo-900/5 overflow-hidden flex flex-col h-full"
            >
-             <div className="p-10 border-b border-slate-100 bg-gradient-to-br from-indigo-50/50 to-white relative overflow-hidden">
-               <div className="relative z-10 flex gap-5 items-center">
-                    <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-blue-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/30">
-                       <Briefcase size={32} />
+             {/* Header Banner */}
+             <div className="p-5 sm:p-6 px-6 border-b border-slate-100 bg-gradient-to-br from-indigo-50/50 via-white to-slate-50/30 shrink-0 relative overflow-hidden">
+               <div className="relative z-10 flex justify-between items-center">
+                    <div className="flex gap-4 items-center">
+                      <div className="w-11 h-11 bg-gradient-to-br from-indigo-500 to-blue-600 text-white rounded-xl flex items-center justify-center shadow-md shadow-indigo-500/20">
+                         <Briefcase size={22} />
+                      </div>
+                      <div>
+                         <h1 className="text-lg font-black text-slate-900 tracking-tight">Create Job Requisition</h1>
+                         <p className="text-slate-500 text-[10px] font-bold uppercase tracking-widest">
+                           {step === 1 && "Step 1 of 4 — Basic Information & Role Setup"}
+                           {step === 2 && subStep === 1 && "Step 2A of 4 — Posting Destination & Job Description"}
+                           {step === 2 && subStep === 2 && "Step 2B of 4 — Key Responsibilities & Qualifications"}
+                           {step === 3 && subStep === 1 && "Step 3A of 4 — Pipeline Templates & Initial Stages"}
+                           {step === 3 && subStep === 2 && "Step 3B of 4 — Final Stages & Custom Pipeline Builder"}
+                           {step === 4 && subStep === 1 && "Step 4A of 4 — AI Screening Rules & Application Dates"}
+                           {step === 4 && subStep === 2 && "Step 4B of 4 — Final Requisition Summary & Publish"}
+                         </p>
+                      </div>
                     </div>
-                   <div>
-                       <h1 className="text-2xl font-black text-slate-900 tracking-tight mb-1">Create Job Requisition</h1>
-                       <p className="text-slate-500 text-xs font-bold uppercase tracking-widest">AI-Powered Job Creation & ATS Setup</p>
-                   </div>
+                    <div className="hidden sm:block text-right">
+                       <span className="text-[10px] font-black uppercase tracking-wider bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg border border-indigo-100">
+                          Step {step}{step > 1 ? (subStep === 1 ? 'A' : 'B') : ''} of 4
+                       </span>
+                    </div>
                </div>
              </div>
 
-             <div className="p-10 py-8">
+             {/* Dynamic Step Content Container */}
+             <div className="p-6 sm:p-8 flex-1 overflow-y-auto scrollbar-thin">
                <AnimatePresence mode="wait">
-                 {/* STEP 1: Basic Details & AI Generation */}
+                 {/* STEP 1: Basic Information */}
                  {step === 1 && (
-                   <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-8">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                   <motion.div key="step1" initial={{ opacity: 0, x: 15 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -15 }} className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                         <FormGroup label="Job Title" required>
-                           <input className={`form-input text-lg font-bold ${errors.title ? 'border-rose-500 bg-rose-50/20' : ''}`} placeholder="e.g. Senior Frontend Engineer" value={formData.title} onChange={e => { setFormData({ ...formData, title: e.target.value }); if (errors.title) setErrors(prev => ({ ...prev, title: '' })); }} />
+                           <input className={`form-input text-base font-bold ${errors.title ? 'border-rose-500 bg-rose-50/20' : ''}`} placeholder="e.g. Senior Frontend Engineer" value={formData.title} onChange={e => { setFormData({ ...formData, title: e.target.value }); if (errors.title) setErrors(prev => ({ ...prev, title: '' })); }} />
                            {errors.title && <p className="text-rose-500 text-[10px] font-bold mt-1 ml-1">{errors.title}</p>}
                         </FormGroup>
+
                         <FormGroup label="Location & Workplace" required ref={locationContainerRef}>
                            <div className="relative w-full">
-                             <div className="space-y-3 w-full">
+                             <div className="space-y-2 w-full">
                                <div className="relative">
-                                 <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={18} />
+                                 <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none" size={16} />
                                  <button
                                    type="button"
                                    onClick={() => setShowLocationDropdown(!showLocationDropdown)}
-                                   className={`w-full bg-slate-50 border border-slate-200 rounded-[14px] pl-12 pr-10 py-3.5 outline-none text-left font-bold text-sm text-slate-800 transition-all hover:bg-slate-100/50 flex items-center justify-between cursor-pointer ${errors.location ? 'border-rose-500 bg-rose-50/20' : ''}`}
+                                   className={`w-full bg-slate-50 border border-slate-200 rounded-[12px] pl-10 pr-9 py-3 outline-none text-left font-bold text-sm text-slate-800 transition-all hover:bg-slate-100/50 flex items-center justify-between cursor-pointer ${errors.location ? 'border-rose-500 bg-rose-50/20' : ''}`}
                                  >
                                    <span>{LOCATION_OPTIONS.includes(formData.location) ? formData.location : (formData.location ? "Other" : "Select Location")}</span>
-                                   <ChevronDown size={18} className={`text-slate-400 transition-transform ${showLocationDropdown ? 'rotate-180' : ''}`} />
+                                   <ChevronDown size={16} className={`text-slate-400 transition-transform ${showLocationDropdown ? 'rotate-180' : ''}`} />
                                  </button>
                                  
                                  {showLocationDropdown && (
-                                   <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-200 rounded-[14px] shadow-2xl max-h-60 overflow-y-auto z-50 py-2 divide-y divide-slate-50">
+                                   <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-[12px] shadow-2xl max-h-52 overflow-y-auto z-50 py-1 divide-y divide-slate-50">
                                      {LOCATION_OPTIONS.map(opt => (
                                        <button
                                          key={opt}
@@ -413,7 +480,7 @@ export function JobPostingPage() {
                                            }
                                            setShowLocationDropdown(false);
                                          }}
-                                         className={`w-full text-left px-5 py-3 text-sm font-bold transition-all cursor-pointer ${
+                                         className={`w-full text-left px-4 py-2.5 text-xs font-bold transition-all cursor-pointer ${
                                            (formData.location === opt || (opt === "Other" && !LOCATION_OPTIONS.includes(formData.location)))
                                              ? 'bg-indigo-50 text-indigo-600'
                                              : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
@@ -427,7 +494,7 @@ export function JobPostingPage() {
                                </div>
                                {(!LOCATION_OPTIONS.includes(formData.location) || formData.location === "") && (
                                  <input 
-                                   className="form-input pl-4" 
+                                   className="form-input pl-3.5 py-2.5" 
                                    placeholder="Type your custom location..." 
                                    value={formData.location} 
                                    onChange={e => setFormData({ ...formData, location: e.target.value })} 
@@ -436,22 +503,24 @@ export function JobPostingPage() {
                              </div>
                            </div>
                         </FormGroup>
-                        <div className="flex gap-4">
-                            <FormGroup label="Job Type" className="flex-1">
-                               <select className="form-input appearance-none bg-slate-50" value={formData.jobType} onChange={e => setFormData({ ...formData, jobType: e.target.value })}>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <FormGroup label="Job Type">
+                               <select className="form-input appearance-none bg-slate-50 py-3" value={formData.jobType} onChange={e => setFormData({ ...formData, jobType: e.target.value })}>
                                  <option>Full-time</option><option>Internship</option><option>Contract</option>
                                </select>
                             </FormGroup>
-                            <FormGroup label="Experience" className="flex-1">
-                               <select className="form-input appearance-none bg-slate-50" value={formData.experienceLevel} onChange={e => setFormData({ ...formData, experienceLevel: e.target.value })}>
+                            <FormGroup label="Experience">
+                               <select className="form-input appearance-none bg-slate-50 py-3" value={formData.experienceLevel} onChange={e => setFormData({ ...formData, experienceLevel: e.target.value })}>
                                  <option>Fresher (0 yrs)</option><option>Entry (1-3 yrs)</option><option>Mid (3-5 yrs)</option><option>Senior (5+ yrs)</option>
                                </select>
                             </FormGroup>
                         </div>
+
                         <FormGroup label="Salary Range">
                            <div className="flex gap-2">
                               <select 
-                                className="form-input w-28 bg-slate-50 border border-slate-200 rounded-[14px] px-3 py-3.5 outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-300 text-sm font-bold text-slate-800 transition-all cursor-pointer"
+                                className="form-input w-24 bg-slate-50 border border-slate-200 rounded-[12px] px-2.5 py-3 outline-none text-xs font-bold text-slate-800 cursor-pointer"
                                 value={formData.salaryCurrency}
                                 onChange={e => setFormData({ ...formData, salaryCurrency: e.target.value })}
                               >
@@ -460,29 +529,31 @@ export function JobPostingPage() {
                                 <option value="EUR">€ (EUR)</option>
                                 <option value="GBP">£ (GBP)</option>
                               </select>
-                              <input className="form-input flex-1" placeholder="e.g. 8,00,000 - 12,00,000" value={formData.salaryRange} onChange={e => setFormData({ ...formData, salaryRange: e.target.value })} />
+                              <input className="form-input flex-1 py-3" placeholder="e.g. 8,00,000 - 12,00,000" value={formData.salaryRange} onChange={e => setFormData({ ...formData, salaryRange: e.target.value })} />
                             </div>
                         </FormGroup>
+
                         <FormGroup label="Number of Openings" required>
                             <input 
                               type="number" 
                               min="1" 
                               max="999" 
-                              className="form-input" 
+                              className={`form-input py-3 ${errors.openings ? 'border-rose-500 bg-rose-50/20' : ''}`}
                               placeholder="e.g. 5" 
                               value={formData.openings} 
                               onChange={e => setFormData({ ...formData, openings: parseInt(e.target.value) || 1 })} 
                             />
+                            {errors.openings && <p className="text-rose-500 text-[10px] font-bold mt-1 ml-1">{errors.openings}</p>}
                         </FormGroup>
                       </div>
 
-                      <div className="h-px bg-slate-100 my-8" />
+                      <div className="h-px bg-slate-100 my-4" />
 
                       <FormGroup label="Required Skills">
-                         <div className="flex gap-3 mb-4 items-stretch relative">
+                         <div className="flex gap-2.5 mb-3 items-stretch relative">
                            <div className="relative flex-1" ref={skillsContainerRef}>
                              <input 
-                               className="w-full p-5 text-sm rounded-[20px] border border-slate-200 bg-white focus:border-indigo-400 focus:ring-indigo-500/10 outline-none focus:ring-4 transition-all shadow-sm" 
+                               className="w-full p-3.5 text-xs rounded-[14px] border border-slate-200 bg-white focus:border-indigo-400 focus:ring-indigo-500/10 outline-none focus:ring-4 transition-all shadow-sm" 
                                placeholder="Type skill and press enter..." 
                                value={formData.skillInput} 
                                onChange={e => {
@@ -557,7 +628,7 @@ export function JobPostingPage() {
                                  if (filteredList.length === 0) return null;
 
                                  return (
-                                   <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-200 rounded-[20px] shadow-2xl max-h-48 overflow-y-auto z-50 py-2 divide-y divide-slate-50">
+                                   <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-[14px] shadow-2xl max-h-40 overflow-y-auto z-50 py-1 divide-y divide-slate-50">
                                      {filteredList.map((skill, idx) => (
                                        <button
                                          key={skill}
@@ -573,14 +644,14 @@ export function JobPostingPage() {
                                            setShowSkillsDropdown(false);
                                            setSkillsActiveIndex(-1);
                                          }}
-                                         className={`w-full text-left px-5 py-3 text-xs font-bold transition-all flex items-center justify-between cursor-pointer uppercase tracking-wider ${
+                                         className={`w-full text-left px-4 py-2 text-[11px] font-bold transition-all flex items-center justify-between cursor-pointer uppercase tracking-wider ${
                                            idx === skillsActiveIndex 
                                              ? 'bg-indigo-50 text-indigo-600' 
                                              : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                                          }`}
                                        >
                                          <span>{skill}</span>
-                                         {idx === skillsActiveIndex && <span className="text-[9px] font-black uppercase text-indigo-400">Enter to select</span>}
+                                         {idx === skillsActiveIndex && <span className="text-[9px] font-black uppercase text-indigo-400">Enter</span>}
                                        </button>
                                      ))}
                                    </div>
@@ -588,345 +659,520 @@ export function JobPostingPage() {
                                })()
                              )}
                            </div>
-                           <button onClick={handleAddSkill} className="px-6 bg-slate-100 text-slate-700 rounded-[20px] font-black text-[11px] uppercase tracking-widest hover:bg-slate-200 transition-all border border-slate-200 shadow-sm cursor-pointer">Add</button>
-                           <button onClick={autoSuggestSkills} className="px-6 bg-indigo-50 text-indigo-700 rounded-[20px] font-black text-[11px] uppercase tracking-widest hover:bg-indigo-100 transition-all border border-indigo-200 shadow-sm flex items-center gap-2 cursor-pointer">
-                               <Sparkles size={14}/> AI Suggest
+                           <button onClick={handleAddSkill} className="px-5 bg-slate-100 text-slate-700 rounded-[14px] font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 transition-all border border-slate-200 shadow-sm cursor-pointer">Add</button>
+                           <button onClick={autoSuggestSkills} className="px-5 bg-indigo-50 text-indigo-700 rounded-[14px] font-black text-[10px] uppercase tracking-widest hover:bg-indigo-100 transition-all border border-indigo-200 shadow-sm flex items-center gap-1.5 cursor-pointer">
+                               <Sparkles size={13}/> AI Suggest
                            </button>
                          </div>
-                         <div className="flex flex-wrap gap-2">
+                         <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
                            {formData.skills.map(s => (
-                             <span key={s} className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-sm">
-                               {s} <button onClick={() => removeSkill(s)} className="text-slate-400 hover:text-white"><X size={14} /></button>
+                             <span key={s} className="px-2.5 py-1 bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm">
+                               {s} <button onClick={() => removeSkill(s)} className="text-slate-400 hover:text-white"><X size={12} /></button>
                              </span>
                            ))}
-                           {formData.skills.length === 0 && <span className="text-xs text-slate-400 font-bold px-2 py-1">No skills added yet.</span>}
+                           {formData.skills.length === 0 && <span className="text-xs text-slate-400 font-bold px-1 py-0.5">No skills added yet.</span>}
                          </div>
                       </FormGroup>
 
-                      {/* Job Posting Destination Selector */}
-                      <div className="space-y-3">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                          <Zap size={12} className="text-indigo-500 animate-pulse" /> Posting Destination
-                        </label>
-                        <p className="text-xs text-slate-400 font-bold uppercase tracking-wider leading-relaxed">
-                          Choose where you want this job listing to be published and promoted on VEGA.
-                        </p>
-                        
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                          {/* Option 1: Job Section only */}
-                          <div 
-                            onClick={() => setFormData({ ...formData, publishDestination: 'JOB_ONLY' })}
-                            className={`p-5 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
-                              formData.publishDestination === 'JOB_ONLY'
-                                ? 'bg-slate-900 border-slate-900 text-white shadow-xl shadow-slate-900/10'
-                                : 'bg-white border-slate-200 hover:border-slate-300'
-                            }`}
-                            id="dest-job-only-card"
-                          >
-                            <div>
-                              <div className="flex justify-between items-center mb-2">
-                                <h4 className="text-sm font-black uppercase tracking-tight">Job Section Only</h4>
-                                <div className={`w-5 h-5 rounded-full flex items-center justify-center border ${
-                                  formData.publishDestination === 'JOB_ONLY'
-                                    ? 'border-indigo-400 bg-indigo-500 text-white'
-                                    : 'border-slate-300'
-                                }`}>
-                                  {formData.publishDestination === 'JOB_ONLY' && <CheckCircle size={12} className="text-white" />}
-                                </div>
-                              </div>
-                              <p className={`text-xs font-medium ${
-                                formData.publishDestination === 'JOB_ONLY' ? 'text-slate-300' : 'text-slate-500'
-                              }`}>Post as a regular job listing.</p>
-                            </div>
-                            <span className={`text-[9px] font-bold uppercase tracking-widest mt-4 block ${
-                              formData.publishDestination === 'JOB_ONLY' ? 'text-indigo-400' : 'text-indigo-600'
-                            }`}>Standard Reach</span>
-                          </div>
-
-                          {/* Option 2: Job Section + Drops Section */}
-                          <div 
-                            onClick={() => setFormData({ ...formData, publishDestination: 'JOB_AND_DROPS' })}
-                            className={`p-5 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
-                              formData.publishDestination === 'JOB_AND_DROPS'
-                                ? 'bg-indigo-950 border-indigo-500 text-white shadow-xl shadow-indigo-950/20'
-                                : 'bg-white border-slate-200 hover:border-slate-300'
-                             }`}
-                             id="dest-job-and-drops-card"
-                           >
-                            <div>
-                              <div className="flex justify-between items-center mb-2">
-                                <h4 className="text-sm font-black uppercase tracking-tight">Job Section + Drops Section</h4>
-                                <div className={`w-5 h-5 rounded-full flex items-center justify-center border ${
-                                  formData.publishDestination === 'JOB_AND_DROPS'
-                                    ? 'border-indigo-400 bg-indigo-500 text-white'
-                                    : 'border-slate-300'
-                                }`}>
-                                  {formData.publishDestination === 'JOB_AND_DROPS' && <CheckCircle size={12} className="text-white" />}
-                                </div>
-                              </div>
-                              <p className={`text-xs font-medium ${
-                                formData.publishDestination === 'JOB_AND_DROPS' ? 'text-slate-300' : 'text-slate-500'
-                              }`}>Also promote this job as a drop/update for better reach.</p>
-                            </div>
-                            <span className={`text-[9px] font-bold uppercase tracking-widest mt-4 block ${
-                              formData.publishDestination === 'JOB_AND_DROPS' ? 'text-indigo-400' : 'text-indigo-600'
-                            }`}>🔥 Maximum Reach & Exposure</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="h-px bg-slate-100 my-8" />
-
-                      {/* AI Enhanced Text Areas */}
-                      {/* Special Wider, Rounded, Clean Job Description Textarea */}
-                      <div className="relative group">
-                          <div className="flex justify-between items-end mb-2">
-                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                                <Briefcase size={12}/> Job Description
-                             </label>
-                             <div className="flex items-center gap-3">
-                                <span className="text-[10px] font-bold text-slate-400">
-                                  {formData.description.length} / 2000 characters
-                                </span>
-                                <button 
-                                   onClick={() => generateWithAI('description')}
-                                   disabled={!!isGeneratingAI}
-                                   className="text-[10px] font-black uppercase tracking-widest text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors border border-indigo-100 disabled:opacity-50"
-                                >
-                                   {isGeneratingAI === 'description' ? <><BrainCircuit size={12} className="animate-pulse" /> Generating...</> : <><Sparkles size={12} /> Auto-Draft with AI</>}
-                                </button>
-                             </div>
-                          </div>
-                          <textarea 
-                            maxLength={2000}
-                            className={`w-full min-h-[160px] resize-y p-5 text-sm leading-relaxed rounded-[20px] border ${errors.description ? 'border-rose-500 bg-rose-50/10 focus:ring-rose-500/15' : 'border-slate-200 bg-white focus:border-indigo-400 focus:ring-indigo-500/10'} outline-none focus:ring-4 transition-all shadow-sm`}
-                            placeholder="Enter job description... Minimum 50 characters required."
-                            value={formData.description}
-                            onChange={e => {
-                              setFormData({ ...formData, description: e.target.value });
-                              if (errors.description) setErrors(prev => ({ ...prev, description: '' }));
-                            }}
-                          />
-                          {errors.description && <p className="text-rose-500 text-[10px] font-bold mt-1 ml-1">{errors.description}</p>}
-                      </div>
-
-                      {[
-                         { id: 'responsibilities', label: 'Key Responsibilities', icon: Target },
-                         { id: 'qualifications', label: 'Qualifications', icon: GraduationCap },
-                      ].map(field => (
-                          <div key={field.id} className="relative group">
-                              <div className="flex justify-between items-end mb-2">
-                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                                    <field.icon size={12}/> {field.label}
-                                 </label>
-                                 <button 
-                                    onClick={() => generateWithAI(field.id as any)}
-                                    disabled={!!isGeneratingAI}
-                                    className="text-[10px] font-black uppercase tracking-widest text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors border border-indigo-100 disabled:opacity-50"
-                                 >
-                                    {isGeneratingAI === field.id ? <><BrainCircuit size={12} className="animate-pulse" /> Generating...</> : <><Sparkles size={12} /> Auto-Draft with AI</>}
-                                 </button>
-                              </div>
-                              <textarea 
-                                className="w-full min-h-[160px] resize-y p-5 text-sm leading-relaxed rounded-[20px] border border-slate-200 bg-white focus:border-indigo-400 focus:ring-indigo-500/10 outline-none focus:ring-4 transition-all shadow-sm"
-                                placeholder={`Enter ${field.label.toLowerCase()}...`}
-                                value={(formData as any)[field.id]}
-                                onChange={e => setFormData({ ...formData, [field.id]: e.target.value })}
-                              />
-                          </div>
-                      ))}
-
-                      <div className="flex justify-end pt-4 gap-3">
-                         <button onClick={handleClose} className="px-8 py-4 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-black uppercase text-[11px] tracking-widest transition-all">
+                      <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+                         <button onClick={handleClose} className="px-6 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all cursor-pointer">
                            Cancel
                          </button>
-                         <button onClick={() => { if (validateStep1()) setStep(2); }} className="px-10 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-xl shadow-indigo-500/20 hover:bg-indigo-700 hover:-translate-y-0.5 transition-all flex items-center gap-2">
-                           Continue to ATS Workflow <ArrowRight size={16} />
+                         <button onClick={() => { if (validateStep1()) { setStep(2); setSubStep(1); } }} className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-indigo-500/20 hover:bg-indigo-700 transition-all flex items-center gap-2 cursor-pointer">
+                           Next: Content (Destination & Description) <ArrowRight size={14} />
                          </button>
                       </div>
                    </motion.div>
                  )}
 
-                 {/* STEP 2: Pipeline Workflow Builder */}
+                 {/* STEP 2: Content & Posting Destination */}
                  {step === 2 && (
-                   <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-8">
-                      <div className="flex justify-between items-center bg-slate-900 rounded-[20px] p-6 text-white shadow-xl mb-8">
-                         <div>
-                            <h3 className="text-lg font-black tracking-tight flex items-center gap-2">Custom Hiring Pipeline <LayoutGrid size={18} className="text-indigo-400"/></h3>
-                            <p className="text-xs text-slate-400 mt-1">Design the stages applicants will move through.</p>
-                         </div>
-                         <div className="flex gap-2">
-                            <button onClick={() => loadWorkflowTemplate('engineering')} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-xl border border-slate-700 transition-colors">Engineering Template</button>
-                            <button onClick={() => loadWorkflowTemplate('campus')} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-xl border border-slate-700 transition-colors">Campus Template</button>
-                         </div>
-                      </div>
+                   <motion.div key={`step2-${subStep}`} initial={{ opacity: 0, x: 15 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -15 }} className="space-y-5">
                       
-                      <div className="space-y-4">
-                        {stages.map((stage, index) => (
-                          <div key={index} className="flex gap-5 items-start group">
-                            <div className="flex flex-col items-center mt-2 relative z-10">
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-xs shadow-md ${stage.name.includes('Selected') ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-white border-2 border-slate-200 text-slate-500'}`}>
-                                {index + 1}
-                              </div>
-                              {index < stages.length - 1 && <div className="absolute top-8 bottom-[-40px] w-[2px] bg-slate-200 -z-10" />}
-                            </div>
+                      {/* Step 2A: Posting Destination + Job Description */}
+                      {subStep === 1 && (
+                        <>
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                              <Zap size={12} className="text-indigo-500 animate-pulse" /> Posting Destination
+                            </label>
                             
-                            <div className={`flex-1 bg-white p-5 rounded-[20px] border shadow-sm transition-all ${stage.name.includes('Selected') ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-200 hover:border-indigo-300'}`}>
-                               <div className="flex justify-between items-start mb-3">
-                                  <div className="flex-1 w-full">
-                                    <input 
-                                      className="bg-transparent border-none outline-none font-black text-slate-800 uppercase tracking-tight text-sm w-full mb-1 p-0 focus:ring-0"
-                                      value={stage.name}
-                                      disabled={!stage.canDelete}
-                                      onChange={e => {
-                                         const newStages = [...stages];
-                                         newStages[index].name = e.target.value;
-                                         setStages(newStages);
-                                      }}
-                                    />
-                                    <div className="mt-1">
-                                       <select 
-                                         className="bg-slate-100 border border-slate-200 outline-none text-[9px] font-black uppercase text-slate-600 rounded px-2 py-1 cursor-pointer focus:ring-2 focus:ring-indigo-500/20"
-                                         value={stage.type}
-                                         onChange={e => {
-                                            const newStages = [...stages];
-                                            newStages[index].type = e.target.value;
-                                            setStages(newStages);
-                                         }}
-                                         disabled={!stage.canDelete}
-                                       >
-                                         <option value="APPLICATION">Resume Review</option>
-                                         <option value="TEST">Skill Assessment</option>
-                                         <option value="INTERVIEW_ONLINE">Video Interview</option>
-                                         <option value="INTERVIEW_OFFLINE">In-Person Interview</option>
-                                       </select>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div 
+                                onClick={() => setFormData({ ...formData, publishDestination: 'JOB_ONLY' })}
+                                className={`p-4 rounded-xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                                  formData.publishDestination === 'JOB_ONLY'
+                                    ? 'bg-slate-900 border-slate-900 text-white shadow-md'
+                                    : 'bg-white border-slate-200 hover:border-slate-300'
+                                }`}
+                              >
+                                <div>
+                                  <div className="flex justify-between items-center mb-1">
+                                    <h4 className="text-xs font-black uppercase tracking-tight">Job Section Only</h4>
+                                    <div className={`w-4 h-4 rounded-full flex items-center justify-center border ${
+                                      formData.publishDestination === 'JOB_ONLY' ? 'border-indigo-400 bg-indigo-500 text-white' : 'border-slate-300'
+                                    }`}>
+                                      {formData.publishDestination === 'JOB_ONLY' && <CheckCircle size={10} className="text-white" />}
                                     </div>
                                   </div>
-                                  {stage.canDelete && (
-                                    <button onClick={() => setStages(stages.filter((_, i) => i !== index))} className="w-8 h-8 rounded-full bg-slate-50 hover:bg-rose-50 flex items-center justify-center text-slate-400 hover:text-rose-500 transition-colors">
-                                      <X size={14} />
-                                    </button>
-                                  )}
-                               </div>
-                               
-                               <input 
-                                  className="w-full bg-slate-50 border border-slate-200 outline-none text-xs text-slate-600 px-3 py-2 rounded-xl focus:bg-white focus:border-indigo-300 transition-colors"
-                                  placeholder="Stage instructions or description for recruiters..."
-                                  value={stage.description}
-                                  onChange={e => {
-                                     const newStages = [...stages];
-                                     newStages[index].description = e.target.value;
-                                     setStages(newStages);
-                                  }}
-                               />
+                                  <p className={`text-[11px] font-medium ${formData.publishDestination === 'JOB_ONLY' ? 'text-slate-300' : 'text-slate-500'}`}>
+                                    Post as a regular job listing.
+                                  </p>
+                                </div>
+                                <span className={`text-[9px] font-bold uppercase tracking-widest mt-2 block ${formData.publishDestination === 'JOB_ONLY' ? 'text-indigo-400' : 'text-indigo-600'}`}>
+                                  Standard Reach
+                                </span>
+                              </div>
 
-                               {stage.type === 'TEST' && (
-                                  <div className="mt-4 bg-indigo-50 p-4 rounded-xl border border-indigo-100 flex flex-wrap gap-4 items-end justify-between">
-                                      <div className="flex flex-wrap gap-4">
-                                         <div>
-                                            <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1">Duration</span>
-                                            <input type="number" className="w-24 h-[38px] bg-white border border-indigo-200 rounded-lg px-3 py-2 text-xs font-bold text-indigo-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" value={stage.config.duration} onChange={e => { const s=[...stages]; s[index].config.duration=Number(e.target.value); setStages(s); }} />
-                                         </div>
-                                         <div>
-                                            <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1">Pass Score %</span>
-                                            <input type="number" className="w-24 h-[38px] bg-white border border-indigo-200 rounded-lg px-3 py-2 text-xs font-bold text-indigo-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" value={stage.config.passScore} onChange={e => { const s=[...stages]; s[index].config.passScore=Number(e.target.value); setStages(s); }} />
-                                         </div>
-                                      </div>
-                                      <div>
-                                         <span className="block text-[9px] font-black text-transparent select-none uppercase tracking-widest mb-1">Configure</span>
-                                         <button onClick={() => setQuestionEditorStage(stage.id)} className="px-4 h-[38px] bg-white text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-lg border border-indigo-200 shadow-sm hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center">
-                                            Configure Test ({stage.questions?.length || 0} Qs)
-                                         </button>
-                                      </div>
+                              <div 
+                                onClick={() => setFormData({ ...formData, publishDestination: 'JOB_AND_DROPS' })}
+                                className={`p-4 rounded-xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                                  formData.publishDestination === 'JOB_AND_DROPS'
+                                    ? 'bg-indigo-950 border-indigo-500 text-white shadow-md'
+                                    : 'bg-white border-slate-200 hover:border-slate-300'
+                                 }`}
+                               >
+                                <div>
+                                  <div className="flex justify-between items-center mb-1">
+                                    <h4 className="text-xs font-black uppercase tracking-tight">Job Section + Drops Section</h4>
+                                    <div className={`w-4 h-4 rounded-full flex items-center justify-center border ${
+                                      formData.publishDestination === 'JOB_AND_DROPS' ? 'border-indigo-400 bg-indigo-500 text-white' : 'border-slate-300'
+                                    }`}>
+                                      {formData.publishDestination === 'JOB_AND_DROPS' && <CheckCircle size={10} className="text-white" />}
+                                    </div>
                                   </div>
-                               )}
+                                  <p className={`text-[11px] font-medium ${formData.publishDestination === 'JOB_AND_DROPS' ? 'text-slate-300' : 'text-slate-500'}`}>
+                                    Also promote this job as a drop/update for better reach.
+                                  </p>
+                                </div>
+                                <span className={`text-[9px] font-bold uppercase tracking-widest mt-2 block ${formData.publishDestination === 'JOB_AND_DROPS' ? 'text-indigo-400' : 'text-indigo-600'}`}>
+                                  🔥 Maximum Reach & Exposure
+                                </span>
+                              </div>
                             </div>
                           </div>
-                        ))}
-                        
-                        <div className="pl-12 pt-2">
-                           <button onClick={addStage} className="w-full py-4 border-2 border-dashed border-slate-300 rounded-[20px] text-slate-500 flex items-center justify-center gap-2 hover:bg-slate-50 hover:border-indigo-300 hover:text-indigo-600 transition-all font-black uppercase text-[10px] tracking-widest">
-                             <Plus size={16} /> Add Pipeline Stage
-                           </button>
-                        </div>
-                      </div>
 
-                      <div className="flex justify-between pt-6 border-t border-slate-100">
-                         <button onClick={() => setStep(1)} className="px-8 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black uppercase text-[11px] tracking-widest hover:bg-slate-200 transition-all">Back</button>
-                         <button onClick={() => setStep(3)} className="px-10 py-3.5 bg-indigo-600 text-white rounded-xl font-black uppercase text-[11px] tracking-widest shadow-xl shadow-indigo-500/20 hover:bg-indigo-700 hover:-translate-y-0.5 transition-all flex items-center gap-2">
-                           Smart Rules & Publish <ArrowRight size={16} />
-                         </button>
-                      </div>
+                          <div className="h-px bg-slate-100 my-2" />
+
+                          <div className="relative group flex flex-col">
+                              <div className="flex justify-between items-end mb-2">
+                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                                    <Briefcase size={12}/> Job Description <span className="text-rose-500">*</span>
+                                 </label>
+                                 <div className="flex items-center gap-2">
+                                    <span className="text-[9px] font-bold text-slate-400">
+                                      {formData.description.length}/2000
+                                    </span>
+                                    <button 
+                                       onClick={() => generateWithAI('description')}
+                                       disabled={!!isGeneratingAI}
+                                       className="text-[9px] font-black uppercase tracking-widest text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-md flex items-center gap-1 border border-indigo-100 disabled:opacity-50 cursor-pointer"
+                                    >
+                                       {isGeneratingAI === 'description' ? <><BrainCircuit size={10} className="animate-pulse" /> AI...</> : <><Sparkles size={10} /> Auto-Draft AI</>}
+                                    </button>
+                                 </div>
+                              </div>
+                              <textarea 
+                                maxLength={2000}
+                                className={`w-full h-48 sm:h-56 p-4 text-xs leading-relaxed rounded-[16px] border ${errors.description ? 'border-rose-500 bg-rose-50/10 focus:ring-rose-500/15' : 'border-slate-200 bg-white focus:border-indigo-400 focus:ring-indigo-500/10'} outline-none focus:ring-2 transition-all shadow-sm`}
+                                placeholder="Enter job description... Minimum 50 characters required."
+                                value={formData.description}
+                                onChange={e => {
+                                  setFormData({ ...formData, description: e.target.value });
+                                  if (errors.description) setErrors(prev => ({ ...prev, description: '' }));
+                                }}
+                              />
+                              {errors.description && <p className="text-rose-500 text-[10px] font-bold mt-1 ml-1">{errors.description}</p>}
+                          </div>
+
+                          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+                             <button onClick={() => { setStep(1); setSubStep(1); }} className="px-6 py-3 bg-slate-100 text-slate-600 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all cursor-pointer">
+                               Back
+                             </button>
+                             <button onClick={() => { if (validateStep2A()) setSubStep(2); }} className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-indigo-500/20 hover:bg-indigo-700 transition-all flex items-center gap-2 cursor-pointer">
+                               Next: Responsibilities & Qualifications <ArrowRight size={14} />
+                             </button>
+                          </div>
+                        </>
+                      )}
+
+                      {/* Step 2B: Responsibilities & Qualifications */}
+                      {subStep === 2 && (
+                        <>
+                          <div className="space-y-4">
+                            {[
+                               { id: 'responsibilities', label: 'Key Responsibilities', icon: Target, height: 'h-36 sm:h-40' },
+                               { id: 'qualifications', label: 'Qualifications', icon: GraduationCap, height: 'h-36 sm:h-40' },
+                            ].map(field => (
+                                <div key={field.id} className="relative group flex flex-col">
+                                    <div className="flex justify-between items-end mb-1.5">
+                                       <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                                          <field.icon size={12}/> {field.label}
+                                       </label>
+                                       <button 
+                                          onClick={() => generateWithAI(field.id as any)}
+                                          disabled={!!isGeneratingAI}
+                                          className="text-[9px] font-black uppercase tracking-widest text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-md flex items-center gap-1 border border-indigo-100 disabled:opacity-50 cursor-pointer"
+                                       >
+                                          {isGeneratingAI === field.id ? <><BrainCircuit size={10} className="animate-pulse" /> AI...</> : <><Sparkles size={10} /> Auto-Draft AI</>}
+                                       </button>
+                                    </div>
+                                    <textarea 
+                                      className={`w-full ${field.height} p-3.5 text-xs leading-relaxed rounded-[14px] border border-slate-200 bg-white focus:border-indigo-400 focus:ring-indigo-500/10 outline-none focus:ring-2 transition-all shadow-sm`}
+                                      placeholder={`Enter ${field.label.toLowerCase()}...`}
+                                      value={(formData as any)[field.id]}
+                                      onChange={e => setFormData({ ...formData, [field.id]: e.target.value })}
+                                    />
+                                </div>
+                            ))}
+                          </div>
+
+                          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+                             <button onClick={() => setSubStep(1)} className="px-6 py-3 bg-slate-100 text-slate-600 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all cursor-pointer">
+                               Back
+                             </button>
+                             <button onClick={() => { if (validateStep2()) { setStep(3); setSubStep(1); } }} className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-indigo-500/20 hover:bg-indigo-700 transition-all flex items-center gap-2 cursor-pointer">
+                               Continue to ATS Workflow <ArrowRight size={14} />
+                             </button>
+                          </div>
+                        </>
+                      )}
                    </motion.div>
                  )}
 
-                 {/* STEP 3: Smart Rules & Publish */}
+                 {/* STEP 3: ATS Workflow Builder */}
                  {step === 3 && (
-                   <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-8">
+                   <motion.div key={`step3-${subStep}`} initial={{ opacity: 0, x: 15 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -15 }} className="space-y-5">
                       
-                      <div className="bg-gradient-to-br from-indigo-900 to-slate-900 rounded-[24px] p-8 text-white relative overflow-hidden shadow-xl">
-                         <div className="absolute right-0 top-0 opacity-10"><Zap size={200} /></div>
-                         <div className="relative z-10">
-                            <h3 className="text-xl font-black uppercase tracking-tight mb-2 flex items-center gap-2"><BrainCircuit className="text-indigo-400" /> AI Applicant Screening Rules</h3>
-                            <p className="text-sm text-indigo-200/80 max-w-lg leading-relaxed mb-6">
-                               Set criteria for applicants. The AI Hiring Copilot will automatically analyze incoming resumes against these metrics and auto-evaluate candidates.
-                            </p>
+                      {/* Step 3A: Pipeline Templates & First Stage Group */}
+                      {subStep === 1 && (
+                        <>
+                          <div className="flex justify-between items-center bg-slate-900 rounded-[16px] p-4 text-white shadow-md">
+                             <div>
+                                <h3 className="text-sm font-black tracking-tight flex items-center gap-2">Custom Hiring Pipeline (Part 1) <LayoutGrid size={16} className="text-indigo-400"/></h3>
+                                <p className="text-[10px] text-slate-400 mt-0.5">Design initial stages applicants move through.</p>
+                             </div>
+                             <div className="flex gap-2">
+                                <button onClick={() => loadWorkflowTemplate('engineering')} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-[10px] font-bold rounded-lg border border-slate-700 transition-colors cursor-pointer">Engineering Template</button>
+                                <button onClick={() => loadWorkflowTemplate('campus')} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-[10px] font-bold rounded-lg border border-slate-700 transition-colors cursor-pointer">Campus Template</button>
+                             </div>
+                          </div>
+                          
+                          <div className="space-y-3">
+                            {stages.slice(0, 3).map((stage, index) => (
+                              <div key={index} className="flex gap-3 items-start group">
+                                <div className="flex flex-col items-center mt-1.5 relative z-10 shrink-0">
+                                  <div className={`w-7 h-7 rounded-full flex items-center justify-center font-black text-[11px] shadow-sm ${stage.name.includes('Selected') ? 'bg-emerald-500 text-white' : 'bg-white border-2 border-slate-200 text-slate-500'}`}>
+                                    {index + 1}
+                                  </div>
+                                  {index < Math.min(3, stages.length) - 1 && <div className="absolute top-7 bottom-[-20px] w-[2px] bg-slate-200 -z-10" />}
+                                </div>
+                                
+                                <div className={`flex-1 bg-white p-3.5 rounded-[16px] border shadow-sm transition-all ${stage.name.includes('Selected') ? 'border-emerald-200 bg-emerald-50/20' : 'border-slate-200 hover:border-indigo-300'}`}>
+                                   <div className="flex justify-between items-center gap-2 mb-2">
+                                      <div className="flex-1 flex gap-2 items-center min-w-0">
+                                        <input 
+                                          className="bg-transparent border-none outline-none font-black text-slate-800 uppercase tracking-tight text-xs flex-1 p-0 focus:ring-0 truncate"
+                                          value={stage.name}
+                                          disabled={!stage.canDelete}
+                                          onChange={e => {
+                                             const newStages = [...stages];
+                                             newStages[index].name = e.target.value;
+                                             setStages(newStages);
+                                          }}
+                                        />
+                                        <select 
+                                          className="bg-slate-100 border border-slate-200 outline-none text-[9px] font-black uppercase text-slate-600 rounded px-2 py-1 cursor-pointer shrink-0"
+                                          value={stage.type}
+                                          onChange={e => {
+                                             const newStages = [...stages];
+                                             newStages[index].type = e.target.value;
+                                             setStages(newStages);
+                                          }}
+                                          disabled={!stage.canDelete}
+                                        >
+                                          <option value="APPLICATION">Resume Review</option>
+                                          <option value="TEST">Skill Assessment</option>
+                                          <option value="INTERVIEW_ONLINE">Video Interview</option>
+                                          <option value="INTERVIEW_OFFLINE">In-Person Interview</option>
+                                        </select>
+                                      </div>
+                                      {stage.canDelete && (
+                                        <button onClick={() => setStages(stages.filter((_, i) => i !== index))} className="w-6 h-6 rounded-full bg-slate-50 hover:bg-rose-50 flex items-center justify-center text-slate-400 hover:text-rose-500 transition-colors shrink-0 cursor-pointer">
+                                          <X size={12} />
+                                        </button>
+                                      )}
+                                   </div>
+                                   
+                                   <input 
+                                      className="w-full bg-slate-50 border border-slate-200 outline-none text-xs text-slate-600 px-3 py-1.5 rounded-lg focus:bg-white focus:border-indigo-300 transition-colors"
+                                      placeholder="Stage instructions or description for recruiters..."
+                                      value={stage.description}
+                                      onChange={e => {
+                                         const newStages = [...stages];
+                                         newStages[index].description = e.target.value;
+                                         setStages(newStages);
+                                      }}
+                                   />
 
-                            <div className="bg-white/10 p-6 rounded-2xl border border-white/10 backdrop-blur-md">
-                               <div className="flex items-center justify-between mb-4">
-                                  <div>
-                                     <span className="block text-sm font-bold text-white mb-1">Minimum AI Match Score required</span>
-                                     <span className="text-xs text-indigo-300">Candidates scoring below this will be flagged as low-match.</span>
-                                  </div>
-                                  <div className="w-20 bg-indigo-950 px-4 py-2 rounded-xl text-center font-black text-xl text-indigo-300 border border-indigo-800">{formData.aiMatchCutoff}%</div>
-                               </div>
-                               <input type="range" min="0" max="100" step="5" value={formData.aiMatchCutoff} onChange={e=>setFormData({...formData, aiMatchCutoff: Number(e.target.value)})} className="w-full accent-indigo-500 mb-6" />
+                                   {stage.type === 'TEST' && (
+                                      <div className="mt-2.5 bg-indigo-50/80 p-2.5 rounded-lg border border-indigo-100 flex flex-wrap gap-3 items-center justify-between">
+                                          <div className="flex gap-3 items-center">
+                                             <div>
+                                                <span className="block text-[8px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">Duration (m)</span>
+                                                <input type="number" className="w-16 h-7 bg-white border border-indigo-200 rounded px-2 py-1 text-xs font-bold text-indigo-900 focus:outline-none" value={stage.config.duration || 45} onChange={e => { const s=[...stages]; s[index].config.duration=Number(e.target.value); setStages(s); }} />
+                                             </div>
+                                             <div>
+                                                <span className="block text-[8px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">Pass %</span>
+                                                <input type="number" className="w-16 h-7 bg-white border border-indigo-200 rounded px-2 py-1 text-xs font-bold text-indigo-900 focus:outline-none" value={stage.config.passScore || 70} onChange={e => { const s=[...stages]; s[index].config.passScore=Number(e.target.value); setStages(s); }} />
+                                             </div>
+                                          </div>
+                                          <button onClick={() => setQuestionEditorStage(stage.id)} className="px-3 h-7 bg-white text-indigo-600 text-[9px] font-black uppercase tracking-widest rounded border border-indigo-200 shadow-sm hover:bg-indigo-600 hover:text-white transition-all cursor-pointer">
+                                             Configure Test ({stage.questions?.length || 0} Qs)
+                                          </button>
+                                      </div>
+                                   )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
 
-                               <label className="flex items-center gap-3 cursor-pointer group">
-                                  <div className={`w-6 h-6 rounded flex items-center justify-center transition-colors ${formData.autoReject ? 'bg-indigo-500' : 'bg-slate-700/50 border border-slate-600 group-hover:border-indigo-400'}`}>
-                                     {formData.autoReject && <CheckCircle size={14} className="text-white" />}
+                          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+                             <button onClick={() => { setStep(2); setSubStep(2); }} className="px-6 py-3 bg-slate-100 text-slate-600 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all cursor-pointer">Back</button>
+                             <button onClick={() => setSubStep(2)} className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-indigo-500/20 hover:bg-indigo-700 transition-all flex items-center gap-2 cursor-pointer">
+                               Next: Remaining Pipeline Stages ({Math.max(0, stages.length - 3)} remaining) <ArrowRight size={14} />
+                             </button>
+                          </div>
+                        </>
+                      )}
+
+                      {/* Step 3B: Remaining Stages & Add Stage */}
+                      {subStep === 2 && (
+                        <>
+                          <div className="flex justify-between items-center bg-slate-900 rounded-[16px] p-4 text-white shadow-md">
+                             <div>
+                                <h3 className="text-sm font-black tracking-tight flex items-center gap-2">Custom Hiring Pipeline (Part 2) <LayoutGrid size={16} className="text-indigo-400"/></h3>
+                                <p className="text-[10px] text-slate-400 mt-0.5">Configure remaining interview rounds and add custom stages.</p>
+                             </div>
+                             <span className="px-3 py-1 bg-indigo-900/60 text-indigo-300 text-[10px] font-bold rounded-lg border border-indigo-700/50">
+                                Total: {stages.length} Stages
+                             </span>
+                          </div>
+
+                          <div className="space-y-3">
+                            {stages.slice(3).map((stage, actualIndex) => {
+                              const index = actualIndex + 3;
+                              return (
+                                <div key={index} className="flex gap-3 items-start group">
+                                  <div className="flex flex-col items-center mt-1.5 relative z-10 shrink-0">
+                                    <div className={`w-7 h-7 rounded-full flex items-center justify-center font-black text-[11px] shadow-sm ${stage.name.includes('Selected') ? 'bg-emerald-500 text-white' : 'bg-white border-2 border-slate-200 text-slate-500'}`}>
+                                      {index + 1}
+                                    </div>
+                                    {index < stages.length - 1 && <div className="absolute top-7 bottom-[-20px] w-[2px] bg-slate-200 -z-10" />}
                                   </div>
-                                  <div>
-                                     <span className="block text-sm font-bold text-white">Auto-Reject Low Matches</span>
-                                     <span className="text-xs text-slate-400">Automatically move candidates below {formData.aiMatchCutoff}% to Rejected stage.</span>
+                                  
+                                  <div className={`flex-1 bg-white p-3.5 rounded-[16px] border shadow-sm transition-all ${stage.name.includes('Selected') ? 'border-emerald-200 bg-emerald-50/20' : 'border-slate-200 hover:border-indigo-300'}`}>
+                                     <div className="flex justify-between items-center gap-2 mb-2">
+                                        <div className="flex-1 flex gap-2 items-center min-w-0">
+                                          <input 
+                                            className="bg-transparent border-none outline-none font-black text-slate-800 uppercase tracking-tight text-xs flex-1 p-0 focus:ring-0 truncate"
+                                            value={stage.name}
+                                            disabled={!stage.canDelete}
+                                            onChange={e => {
+                                               const newStages = [...stages];
+                                               newStages[index].name = e.target.value;
+                                               setStages(newStages);
+                                            }}
+                                          />
+                                          <select 
+                                            className="bg-slate-100 border border-slate-200 outline-none text-[9px] font-black uppercase text-slate-600 rounded px-2 py-1 cursor-pointer shrink-0"
+                                            value={stage.type}
+                                            onChange={e => {
+                                               const newStages = [...stages];
+                                               newStages[index].type = e.target.value;
+                                               setStages(newStages);
+                                            }}
+                                            disabled={!stage.canDelete}
+                                          >
+                                            <option value="APPLICATION">Resume Review</option>
+                                            <option value="TEST">Skill Assessment</option>
+                                            <option value="INTERVIEW_ONLINE">Video Interview</option>
+                                            <option value="INTERVIEW_OFFLINE">In-Person Interview</option>
+                                          </select>
+                                        </div>
+                                        {stage.canDelete && (
+                                          <button onClick={() => setStages(stages.filter((_, i) => i !== index))} className="w-6 h-6 rounded-full bg-slate-50 hover:bg-rose-50 flex items-center justify-center text-slate-400 hover:text-rose-500 transition-colors shrink-0 cursor-pointer">
+                                            <X size={12} />
+                                          </button>
+                                        )}
+                                     </div>
+                                     
+                                     <input 
+                                        className="w-full bg-slate-50 border border-slate-200 outline-none text-xs text-slate-600 px-3 py-1.5 rounded-lg focus:bg-white focus:border-indigo-300 transition-colors"
+                                        placeholder="Stage instructions or description for recruiters..."
+                                        value={stage.description}
+                                        onChange={e => {
+                                           const newStages = [...stages];
+                                           newStages[index].description = e.target.value;
+                                           setStages(newStages);
+                                        }}
+                                     />
+
+                                     {stage.type === 'TEST' && (
+                                        <div className="mt-2.5 bg-indigo-50/80 p-2.5 rounded-lg border border-indigo-100 flex flex-wrap gap-3 items-center justify-between">
+                                            <div className="flex gap-3 items-center">
+                                               <div>
+                                                  <span className="block text-[8px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">Duration (m)</span>
+                                                  <input type="number" className="w-16 h-7 bg-white border border-indigo-200 rounded px-2 py-1 text-xs font-bold text-indigo-900 focus:outline-none" value={stage.config.duration || 45} onChange={e => { const s=[...stages]; s[index].config.duration=Number(e.target.value); setStages(s); }} />
+                                               </div>
+                                               <div>
+                                                  <span className="block text-[8px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">Pass %</span>
+                                                  <input type="number" className="w-16 h-7 bg-white border border-indigo-200 rounded px-2 py-1 text-xs font-bold text-indigo-900 focus:outline-none" value={stage.config.passScore || 70} onChange={e => { const s=[...stages]; s[index].config.passScore=Number(e.target.value); setStages(s); }} />
+                                               </div>
+                                            </div>
+                                            <button onClick={() => setQuestionEditorStage(stage.id)} className="px-3 h-7 bg-white text-indigo-600 text-[9px] font-black uppercase tracking-widest rounded border border-indigo-200 shadow-sm hover:bg-indigo-600 hover:text-white transition-all cursor-pointer">
+                                               Configure Test ({stage.questions?.length || 0} Qs)
+                                            </button>
+                                        </div>
+                                     )}
                                   </div>
-                                  <input type="checkbox" className="hidden" checked={formData.autoReject} onChange={(e) => setFormData({...formData, autoReject: e.target.checked})} />
-                               </label>
+                                </div>
+                              );
+                            })}
+
+                            {stages.length < 4 && (
+                              <p className="text-xs text-slate-400 italic text-center py-2">
+                                All primary stages are configured in Part 1. You can add extra pipeline stages below.
+                              </p>
+                            )}
+
+                            <div className="pl-10 pt-1">
+                               <button onClick={addStage} className="w-full py-2.5 border-2 border-dashed border-slate-300 rounded-[14px] text-slate-500 flex items-center justify-center gap-2 hover:bg-slate-50 hover:border-indigo-300 hover:text-indigo-600 transition-all font-black uppercase text-[10px] tracking-widest cursor-pointer">
+                                 <Plus size={14} /> Add Pipeline Stage
+                               </button>
                             </div>
-                         </div>
-                      </div>
+                          </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <FormGroup label="Start Accepting Applications">
-                           <div className="relative">
-                             <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                             <input type="date" className="form-input" style={{ paddingLeft: '3rem' }} value={formData.startDate} onChange={e => setFormData({ ...formData, startDate: e.target.value })} />
-                           </div>
-                        </FormGroup>
-                        <FormGroup label="Application End Deadline" required>
-                           <div className="relative">
-                             <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-rose-400" size={16} />
-                             <input type="date" className="form-input border-rose-200 bg-rose-50/30 text-rose-900 focus:ring-rose-100" style={{ paddingLeft: '3rem' }} value={formData.deadline} onChange={e => setFormData({ ...formData, deadline: e.target.value })} />
-                           </div>
-                        </FormGroup>
-                      </div>
+                          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+                             <button onClick={() => setSubStep(1)} className="px-6 py-3 bg-slate-100 text-slate-600 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all cursor-pointer">Back</button>
+                             <button onClick={() => { if (validateStep3()) { setStep(4); setSubStep(1); } }} className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-indigo-500/20 hover:bg-indigo-700 transition-all flex items-center gap-2 cursor-pointer">
+                               Next: Review & Publish <ArrowRight size={14} />
+                             </button>
+                          </div>
+                        </>
+                      )}
+                   </motion.div>
+                 )}
 
-                      <div className="p-6 bg-slate-50 border border-slate-200 rounded-[20px]">
-                         <FormGroup label="Internal Recruiter Notes (Private)">
-                            <textarea className="form-input bg-white h-24 resize-none py-4 text-sm" placeholder="Budget info, fast-track rules, or internal memos..." value={formData.additionalNotes} onChange={e => setFormData({ ...formData, additionalNotes: e.target.value })} />
-                         </FormGroup>
-                      </div>
+                 {/* STEP 4: Review, Rules & Publish */}
+                 {step === 4 && (
+                   <motion.div key={`step4-${subStep}`} initial={{ opacity: 0, x: 15 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -15 }} className="space-y-5">
+                      
+                      {/* Step 4A: AI Screening Rules, Application Dates & Notes */}
+                      {subStep === 1 && (
+                        <>
+                          <div className="bg-gradient-to-br from-indigo-900 to-slate-900 rounded-[18px] p-5 text-white relative overflow-hidden shadow-md">
+                             <div className="relative z-10">
+                                <h3 className="text-sm font-black uppercase tracking-tight mb-1 flex items-center gap-2"><BrainCircuit className="text-indigo-400" size={16} /> AI Applicant Screening Rules</h3>
+                                <p className="text-xs text-indigo-200/80 mb-3">
+                                   Set screening criteria for automated AI match scoring.
+                                </p>
 
-                      <div className="flex justify-between pt-6 border-t border-slate-100">
-                         <button onClick={() => setStep(2)} className="px-8 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black uppercase text-[11px] tracking-widest hover:bg-slate-200 transition-all">Back</button>
-                         <button 
-                           onClick={handleSubmit} 
-                           disabled={loading}
-                           className="px-12 py-3.5 bg-emerald-600 text-white rounded-xl font-black uppercase text-[11px] tracking-widest shadow-xl shadow-emerald-500/20 hover:bg-emerald-700 hover:-translate-y-0.5 transition-all flex items-center gap-2 disabled:bg-slate-300 disabled:shadow-none"
-                         >
-                           {loading ? 'Publishing...' : 'Publish Job & Go Live'} <CheckCircle size={16} />
-                         </button>
-                      </div>
+                                <div className="bg-white/10 p-4 rounded-xl border border-white/10">
+                                   <div className="flex items-center justify-between mb-2">
+                                      <span className="text-xs font-bold text-white">Minimum AI Match Cutoff</span>
+                                      <div className="bg-indigo-950 px-2.5 py-1 rounded-lg text-center font-black text-sm text-indigo-300 border border-indigo-800">{formData.aiMatchCutoff}%</div>
+                                   </div>
+                                   <input type="range" min="0" max="100" step="5" value={formData.aiMatchCutoff} onChange={e=>setFormData({...formData, aiMatchCutoff: Number(e.target.value)})} className="w-full accent-indigo-500 mb-3 cursor-pointer" />
+
+                                   <label className="flex items-center gap-2.5 cursor-pointer">
+                                      <div className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${formData.autoReject ? 'bg-indigo-500' : 'bg-slate-700/50 border border-slate-600'}`}>
+                                         {formData.autoReject && <CheckCircle size={12} className="text-white" />}
+                                      </div>
+                                      <span className="text-xs font-bold text-white">Auto-Reject candidates below {formData.aiMatchCutoff}% match</span>
+                                      <input type="checkbox" className="hidden" checked={formData.autoReject} onChange={(e) => setFormData({...formData, autoReject: e.target.checked})} />
+                                   </label>
+                                </div>
+                             </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <FormGroup label="Start Accepting Applications">
+                               <div className="relative">
+                                 <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
+                                 <input type="date" className="form-input pl-10 py-2.5" value={formData.startDate} onChange={e => setFormData({ ...formData, startDate: e.target.value })} />
+                               </div>
+                            </FormGroup>
+                            <FormGroup label="Application End Deadline" required>
+                               <div className="relative">
+                                 <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 text-rose-400" size={15} />
+                                 <input type="date" className="form-input pl-10 py-2.5 border-rose-200 bg-rose-50/30 text-rose-900 focus:ring-rose-100" value={formData.deadline} onChange={e => setFormData({ ...formData, deadline: e.target.value })} />
+                               </div>
+                            </FormGroup>
+                          </div>
+
+                          <FormGroup label="Internal Recruiter Notes (Private)">
+                             <textarea className="form-input bg-slate-50 h-16 py-2.5 text-xs resize-none" placeholder="Budget info, fast-track rules, or internal notes..." value={formData.additionalNotes} onChange={e => setFormData({ ...formData, additionalNotes: e.target.value })} />
+                          </FormGroup>
+
+                          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+                             <button onClick={() => { setStep(3); setSubStep(2); }} className="px-6 py-3 bg-slate-100 text-slate-600 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all cursor-pointer">Back</button>
+                             <button onClick={() => setSubStep(2)} className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-indigo-500/20 hover:bg-indigo-700 transition-all flex items-center gap-2 cursor-pointer">
+                               Next: Final Review & Publish <ArrowRight size={14} />
+                             </button>
+                          </div>
+                        </>
+                      )}
+
+                      {/* Step 4B: Requisition Review & Publish */}
+                      {subStep === 2 && (
+                        <>
+                          <div className="p-5 bg-gradient-to-br from-slate-900 to-indigo-950 border border-slate-800 rounded-[20px] text-white shadow-lg space-y-4">
+                            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                              <div>
+                                <h3 className="font-black text-sm uppercase tracking-wider text-indigo-300">Requisition Summary Review</h3>
+                                <p className="text-[11px] text-slate-400 mt-0.5">Please verify details before publishing your job opportunity.</p>
+                              </div>
+                              <span className="px-3 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-black uppercase tracking-widest rounded-full">
+                                Ready to Publish
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                               <div className="bg-white/5 p-3 rounded-xl border border-white/5"><span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Role Title</span> <strong className="text-white text-xs">{formData.title || 'Untitled'}</strong></div>
+                               <div className="bg-white/5 p-3 rounded-xl border border-white/5"><span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Location</span> <strong className="text-white text-xs">{formData.location}</strong></div>
+                               <div className="bg-white/5 p-3 rounded-xl border border-white/5"><span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Openings</span> <strong className="text-indigo-300 text-xs">{formData.openings} Openings</strong></div>
+                               <div className="bg-white/5 p-3 rounded-xl border border-white/5"><span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Pipeline</span> <strong className="text-emerald-400 text-xs">{stages.length} Stages</strong></div>
+                            </div>
+
+                            <div className="bg-white/5 p-3.5 rounded-xl border border-white/5 space-y-2 text-xs">
+                              <div className="flex justify-between text-slate-300">
+                                <span>Posting Destination:</span>
+                                <strong className="text-white">{formData.publishDestination === 'JOB_AND_DROPS' ? 'Job Section + Drops Section' : 'Job Section Only'}</strong>
+                              </div>
+                              <div className="flex justify-between text-slate-300">
+                                <span>Salary / Compensation:</span>
+                                <strong className="text-white">{formData.salaryRange ? `${formData.salaryCurrency} ${formData.salaryRange}` : 'Not disclosed'}</strong>
+                              </div>
+                              <div className="flex justify-between text-slate-300">
+                                <span>AI Cutoff & Auto-Reject:</span>
+                                <strong className="text-white">{formData.aiMatchCutoff}% {formData.autoReject ? '(Auto-Reject Active)' : '(Manual Review)'}</strong>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+                             <button onClick={() => setSubStep(1)} className="px-6 py-3 bg-slate-100 text-slate-600 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all cursor-pointer">Back</button>
+                             <button 
+                               onClick={handleSubmit} 
+                               disabled={loading}
+                               className="px-10 py-3 bg-emerald-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-emerald-500/20 hover:bg-emerald-700 transition-all flex items-center gap-2 disabled:bg-slate-300 disabled:shadow-none cursor-pointer"
+                             >
+                               {loading ? 'Publishing...' : 'Publish Job & Go Live'} <CheckCircle size={14} />
+                             </button>
+                          </div>
+                        </>
+                      )}
 
                    </motion.div>
                  )}
@@ -935,34 +1181,51 @@ export function JobPostingPage() {
            </motion.div>
            
            {/* Summary Side Panel */}
-           <div className="w-[320px] shrink-0 sticky top-28 space-y-6 hidden lg:block">
-              <div className="bg-white rounded-[24px] border border-slate-200 p-6 shadow-sm">
-                 <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4 border-b border-slate-100 pb-2">Draft Summary</h4>
-                 <div className="space-y-4">
+           <div className="w-[300px] shrink-0 space-y-4 hidden lg:flex flex-col h-full overflow-y-auto">
+              <div className="bg-white rounded-[20px] border border-slate-200 p-5 shadow-sm">
+                 <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 border-b border-slate-100 pb-2">Draft Summary</h4>
+                 <div className="space-y-3">
                     <div>
-                        <span className="text-xs text-slate-500 block mb-0.5">Job Title</span>
-                        <span className="text-sm font-bold text-slate-900 tracking-tight">{formData.title || 'Not specified'}</span>
+                        <span className="text-[10px] text-slate-400 font-bold block uppercase mb-0.5">Job Title</span>
+                        <span className="text-xs font-extrabold text-slate-900 tracking-tight block truncate">{formData.title || 'Not specified'}</span>
                     </div>
                     <div>
-                        <span className="text-xs text-slate-500 block mb-0.5">Location</span>
-                        <span className="text-sm font-bold text-slate-900 flex items-center gap-1.5"><MapPin size={14} className="text-slate-400"/> {formData.location}</span>
+                        <span className="text-[10px] text-slate-400 font-bold block uppercase mb-0.5">Location & Type</span>
+                        <span className="text-xs font-bold text-slate-800 flex items-center gap-1"><MapPin size={12} className="text-slate-400"/> {formData.location} • {formData.jobType}</span>
                     </div>
                     <div>
-                        <span className="text-xs text-slate-500 block mb-0.5">Pipeline Stages</span>
-                        <span className="text-sm font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">{stages.length} Stages</span>
+                        <span className="text-[10px] text-slate-400 font-bold block uppercase mb-0.5">Openings</span>
+                        <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 inline-block">{formData.openings} {formData.openings === 1 ? 'Opening' : 'Openings'}</span>
                     </div>
+                    <div>
+                        <span className="text-[10px] text-slate-400 font-bold block uppercase mb-0.5">Pipeline Stages</span>
+                        <span className="text-xs font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 inline-block">{stages.length} Stages</span>
+                    </div>
+                    {formData.skills.length > 0 && (
+                      <div>
+                          <span className="text-[10px] text-slate-400 font-bold block uppercase mb-1">Skills</span>
+                          <div className="flex flex-wrap gap-1">
+                            {formData.skills.slice(0, 5).map(s => (
+                              <span key={s} className="px-2 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-bold rounded">{s}</span>
+                            ))}
+                            {formData.skills.length > 5 && (
+                              <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[10px] font-bold rounded">+{formData.skills.length - 5}</span>
+                            )}
+                          </div>
+                      </div>
+                    )}
                  </div>
               </div>
 
-              <div className="bg-indigo-50 border border-indigo-100 rounded-[24px] p-6 text-indigo-900">
-                 <div className="flex gap-3 mb-3 text-indigo-600">
-                    <ShieldCheck size={24} />
-                    <h4 className="font-black text-sm uppercase tracking-tight mt-1">Enterprise Grade ATS</h4>
+              <div className="bg-indigo-50/80 border border-indigo-100 rounded-[20px] p-5 text-indigo-900">
+                 <div className="flex gap-2.5 mb-2 text-indigo-600 items-center">
+                    <ShieldCheck size={20} />
+                    <h4 className="font-black text-xs uppercase tracking-tight">Enterprise Grade ATS</h4>
                  </div>
-                 <p className="text-xs font-medium leading-relaxed opacity-80 mb-4">
-                    You are publishing to VEGA's premium network. Automatic AI screening and candidate matching will be active upon launch.
+                 <p className="text-[11px] font-medium leading-relaxed opacity-80 mb-3">
+                    Automatic AI screening and candidate matching will be active upon launch.
                  </p>
-                 <div className="flex items-center gap-2 text-[10px] font-black uppercase text-indigo-500 tracking-widest bg-white/60 px-3 py-2 rounded-lg border border-indigo-200">
+                 <div className="flex items-center gap-2 text-[9px] font-black uppercase text-indigo-600 tracking-widest bg-white/80 px-2.5 py-1.5 rounded-lg border border-indigo-200">
                     STATUS: {profile?.status === 'APPROVED' ? 'READY' : 'PENDING'}
                  </div>
               </div>
