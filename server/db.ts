@@ -1378,6 +1378,26 @@ export async function initDb() {
         console.error("Error migrating interview_schedules columns:", e);
       }
 
+      // Add missing recommendation_notifications columns for MySQL
+      try {
+        const [recCols]: any = await connection.query("SHOW COLUMNS FROM recommendation_notifications");
+        const recColNames = recCols.map((c: any) => c.Field);
+        const requiredRecCols = [
+          { name: "matched_skills_json", type: "LONGTEXT" },
+          { name: "recommendation_reason", type: "TEXT" },
+          { name: "notification_status", type: "VARCHAR(50) DEFAULT 'SENT'" }
+        ];
+
+        for (const col of requiredRecCols) {
+          if (!recColNames.includes(col.name)) {
+            console.log(`📡 Adding missing column ${col.name} to recommendation_notifications...`);
+            await connection.query(`ALTER TABLE recommendation_notifications ADD COLUMN ${col.name} ${col.type}`);
+          }
+        }
+      } catch (e) {
+        console.error("Error migrating recommendation_notifications columns:", e);
+      }
+
       // --- ENTERPRISE INTERVIEW PLATFORM TABLES (MySQL Versions) ---
       try {
         await connection.query(`
