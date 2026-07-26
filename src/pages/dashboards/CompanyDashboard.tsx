@@ -382,8 +382,11 @@ export function CompanyDashboard() {
     return hiringTimeJobs.map((item: any) => ({
       id: item.jobId,
       title: item.jobTitle,
-      avgDays: item.avgDays,
-      hiresCount: item.hiredCount
+      avgDays: item.days ?? item.avgDays ?? 0,
+      hiresCount: item.hiredCount ?? 0,
+      openings: item.openings || 1,
+      resultState: item.resultState || 'Active',
+      formattedDeadline: item.formattedDeadline || (item.deadline ? new Date(item.deadline).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A')
     }));
   }, [hiringTimeJobs]);
   const jobsPerPage = 8;
@@ -644,7 +647,7 @@ export function CompanyDashboard() {
   };
 
   // Derived datasets
-  const activeJobsListToRender = realJobs.map((j: any) => {
+  const activeJobsListToRender = realJobs.filter(isJobActive).map((j: any) => {
     const matchingApps = realApplicants.filter((a: any) => a.job_title === j.title || a.job_id === j.id);
     const hiredCount = matchingApps.filter((a: any) => normalizeStageBucket(a) === 'HIRED').length;
     const pipelineCount = matchingApps.filter((a: any) => {
@@ -652,7 +655,7 @@ export function CompanyDashboard() {
       return b !== 'REJECTED' && b !== 'HIRED';
     }).length;
 
-    const positions = j.positions_available ?? j.number_of_positions ?? j.openings ?? j.vacancies ?? j.no_of_positions ?? null;
+    const positions = j.openings || 1;
     const stageCount = j.stage_count ?? j.pipeline_stages_count ?? (j.stages ? j.stages.length : null);
 
     return {
@@ -1662,37 +1665,34 @@ export function CompanyDashboard() {
                 </div>
               ) : (
                 <div className="space-y-3 overflow-y-auto scrollbar-hide max-h-[210px] pr-1">
-                  {(() => {
-                    const maxDays = Math.max(...hiringTimeJobsData.map(d => d.avgDays), 7);
-                    return hiringTimeJobsData.map((job) => {
-                      const percentage = Math.min(100, Math.max(8, (job.avgDays / maxDays) * 100));
-                      return (
-                        <div key={job.id} className="bg-slate-50/40 hover:bg-slate-50 border border-slate-100/60 rounded-xl p-2.5 transition-all flex flex-col justify-between">
-                          <div className="flex justify-between items-start gap-2">
-                            <div className="min-w-0">
-                              <span className="text-[11px] font-extrabold text-slate-900 block truncate">
-                                {job.title}
-                              </span>
-                              <span className="text-[9px] font-bold text-slate-400 block mt-0.5">
-                                {job.hiresCount} {job.hiresCount === 1 ? "candidate" : "candidates"} selected
-                              </span>
-                            </div>
-                            <div className="text-right shrink-0">
-                              <span className="text-[11px] font-black text-indigo-600">
-                                {job.avgDays} {job.avgDays === 1 ? "day" : "days"}
-                              </span>
-                            </div>
+                  {hiringTimeJobsData.map((job) => {
+                    const percentage = Math.min(100, Math.max(0, Math.round((job.hiresCount / job.openings) * 100)));
+                    return (
+                      <div key={job.id} className="bg-slate-50/40 hover:bg-slate-50 border border-slate-100/60 rounded-xl p-2.5 transition-all flex flex-col justify-between">
+                        <div className="flex justify-between items-start gap-2">
+                          <div className="min-w-0 flex-1">
+                            <span className="text-[11px] font-extrabold text-slate-900 block truncate" title={job.title}>
+                              {job.title}
+                            </span>
+                            <span className="text-[9px] font-bold text-slate-400 block mt-0.5 truncate">
+                              Hired {job.hiresCount} of {job.openings} • Deadline {job.formattedDeadline} • {job.resultState}
+                            </span>
                           </div>
-                          <div className="mt-2 w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                            <div 
-                              className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-500" 
-                              style={{ width: `${percentage}%` }}
-                            />
+                          <div className="text-right shrink-0 ml-2">
+                            <span className="text-[11px] font-black text-indigo-600">
+                              {job.avgDays} {job.avgDays === 1 ? "day" : "days"}
+                            </span>
                           </div>
                         </div>
-                      );
-                    });
-                  })()}
+                        <div className="mt-2 w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                          <div 
+                            className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-500" 
+                            style={{ width: `${percentage}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

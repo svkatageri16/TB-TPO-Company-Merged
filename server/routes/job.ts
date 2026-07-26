@@ -89,7 +89,7 @@ router.post("/", authenticate, async (req: any, res) => {
     title, description, skills, location, jobType, 
     experienceLevel, educationRequirement, responsibilities, 
     qualifications, additionalNotes, startDate, deadline, stages,
-    salaryRange, publishDestination
+    salaryRange, publishDestination, openings
   } = req.body;
 
   try {
@@ -139,20 +139,29 @@ router.post("/", authenticate, async (req: any, res) => {
       return res.status(400).json({ success: false, message: "Application end deadline cannot be before start date." });
     }
 
+    let openingsNum = 1;
+    if (openings !== undefined && openings !== null) {
+      openingsNum = typeof openings === "number" ? openings : Number(openings);
+      if (isNaN(openingsNum) || !Number.isInteger(openingsNum) || openingsNum < 1 || openingsNum > 999) {
+        return res.status(400).json({ success: false, message: "Number of openings must be an integer between 1 and 999." });
+      }
+    }
+
     const publishDestinationValue = publishDestination === "JOB_AND_DROPS" ? "JOB_AND_DROPS" : "JOB_ONLY";
 
     const [result]: any = await db.query(`
       INSERT INTO jobs (
         company_id, title, description, skills_json, location, job_type,
         experience_level, salary_range, education_requirement, responsibilities,
-        qualifications, additional_notes, application_start_date, deadline, publish_destination
+        qualifications, additional_notes, application_start_date, deadline, publish_destination,
+        openings
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       companyId, title, description, JSON.stringify(skills || []), location, jobType || "Full-time",
       experienceLevel || "Entry Level", salaryRange || "", educationRequirement || "", responsibilities || "",
       qualifications || "", additionalNotes || "", startDate || new Date().toISOString().split('T')[0], deadline,
-      publishDestinationValue
+      publishDestinationValue, openingsNum
     ]);
 
     const jobId = result.insertId;

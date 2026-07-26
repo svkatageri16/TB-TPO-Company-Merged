@@ -166,7 +166,11 @@ const isJobEnded = (job: any) => {
 };
 
 const getHiringTimeData = async (companyId: any, isSubHr: boolean, assignedJobIds: number[], jobStatusQuery: string) => {
-  let jobQuery = "SELECT id, title, status, deadline, ended_at FROM jobs WHERE company_id = ?";
+  let jobQuery = `
+    SELECT id, title, status, deadline, openings, application_start_date, created_at, ended_at, pipeline_ended_at
+    FROM jobs 
+    WHERE company_id = ?
+  `;
   let jobParams: any[] = [companyId];
   if (isSubHr) {
     if (assignedJobIds.length > 0) {
@@ -208,17 +212,14 @@ const getHiringTimeData = async (companyId: any, isSubHr: boolean, assignedJobId
       a.status,
       a.applied_at,
       ${hiredAtSubquery} as hired_at,
-      j.title as job_title,
-      j.status as job_status,
       js.stage_type as current_stage_type,
       js.stage_name as current_stage_name
     FROM job_applications a
-    JOIN jobs j ON a.job_id = j.id
     LEFT JOIN job_stages js ON a.current_stage_id = js.id
     WHERE a.job_id IN (${targetJobIds.join(",")})
   `;
 
-  const [rows]: any = await db.query(queryStr);
+  const [appsRows]: any = await db.query(queryStr);
 
   const normalizeStageBucketLocal = (app: any) => {
     const status = String(app.status || '').toUpperCase();
@@ -281,53 +282,93 @@ const getHiringTimeData = async (companyId: any, isSubHr: boolean, assignedJobId
     return 'APPLIED';
   };
 
-  const jobWiseMap: Record<number, { jobTitle: string; jobStatus: string; totalDays: number; count: number }> = {};
-  let overallTotalDays = 0;
-  let overallCount = 0;
-
-  for (const row of rows) {
-    if (normalizeStageBucketLocal(row) !== 'HIRED') {
-      continue;
-    }
-
-    if (row.applied_at && row.hired_at) {
-      const start = new Date(row.applied_at);
-      const end = new Date(row.hired_at);
-      const diffMs = end.getTime() - start.getTime();
-
-      if (diffMs < 0) {
-        continue;
-      }
-
-      const diffDays = diffMs / (1000 * 60 * 60 * 24);
-
-      overallTotalDays += diffDays;
-      overallCount++;
-
-      const jId = row.job_id;
-      if (!jobWiseMap[jId]) {
-        jobWiseMap[jId] = { jobTitle: row.job_title || 'Unknown Job', jobStatus: row.job_status, totalDays: 0, count: 0 };
-      }
-      jobWiseMap[jId].totalDays += diffDays;
-      jobWiseMap[jId].count++;
+  const hiresByJob: Record<number, Array<{ applied_at: Date; hired_at: Date }>> = {};
+  for (const app of (appsRows || [])) {
+    if (normalizeStageBucketLocal(app) === 'HIRED') {
+      const jobId = Number(app.job_id);
+      if (!hiresByJob[jobId]) hiresByJob[jobId] = [];
+      
+      const appliedDate = app.applied_at ? new Date(app.applied_at) : null;
+      const hiredDate = app.hired_at ? new Date(app.hired_at) : (appliedDate || new Date());
+      hiresByJob[jobId].push({
+        applied_at: appliedDate || hiredDate,
+        hired_at: hiredDate
+      });
     }
   }
 
-  const jobWise = Object.entries(jobWiseMap).map(([jobId, val]) => {
-    const avg = val.count > 0 ? val.totalDays / val.count : 0;
-    const roundedAvg = Math.round(avg * 10) / 10;
+  const now = new Date();
+  let totalDaysAllJobs = 0;
+  let countJobsWithDays = 0;
+
+  const jobWise = filteredJobs.map((j: any) => {
+    const jobId = Number(j.id);
+    const jobHires = hiresByJob[jobId] || [];
+    jobHires.sort((a, b) => a.hired_at.getTime() - b.hired_at.getTime());
+
+    const hiredCount = jobHires.length;
+    const openings = Number(j.openings || 1);
+
+    const startDateRaw = j.application_start_date || j.created_at;
+    const startDate = startDateRaw ? new Date(startDateRaw) : now;
+
+    let resultState: 'Active' | 'Fully Filled' | 'Ended' | 'Expired' = 'Active';
+    let endCompareDate: Date = now;
+
+    const isValidDeadline = j.deadline && 
+      j.deadline !== 'null' && 
+      j.deadline !== 'undefined' && 
+      j.deadline.toString().trim() !== '' && 
+      j.deadline !== '0000-00-00' && 
+      !isNaN(new Date(j.deadline).getTime());
+    
+    const deadlineEndOfDay = isValidDeadline ? new Date(new Date(j.deadline).setHours(23, 59, 59, 999)) : null;
+    const isExpired = deadlineEndOfDay ? (deadlineEndOfDay.getTime() < now.getTime()) : false;
+
+    if (hiredCount >= openings) {
+      resultState = 'Fully Filled';
+      const finalHireObj = jobHires[Math.min(openings - 1, hiredCount - 1)];
+      endCompareDate = finalHireObj ? finalHireObj.hired_at : now;
+    } else if (j.status === 'CLOSED' || j.ended_at) {
+      resultState = 'Ended';
+      const endTimestamp = j.ended_at || j.pipeline_ended_at;
+      endCompareDate = endTimestamp ? new Date(endTimestamp) : now;
+    } else if (isExpired) {
+      resultState = 'Expired';
+      endCompareDate = deadlineEndOfDay || now;
+    } else {
+      resultState = 'Active';
+      endCompareDate = now;
+    }
+
+    const diffMs = endCompareDate.getTime() - startDate.getTime();
+    const days = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+
+    totalDaysAllJobs += days;
+    countJobsWithDays++;
+
+    let formattedDeadline = 'N/A';
+    if (isValidDeadline) {
+      const d = new Date(j.deadline);
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      formattedDeadline = `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+    }
+
     return {
-      jobId: Number(jobId),
-      jobTitle: val.jobTitle,
-      jobStatus: val.jobStatus,
-      avgDays: roundedAvg,
-      averageDaysToHire: roundedAvg,
-      hiredCount: val.count,
-      successfulCandidateCount: val.count
+      jobId,
+      jobTitle: j.title,
+      jobStatus: j.status,
+      openings,
+      hiredCount,
+      days,
+      avgDays: days,
+      resultState,
+      deadline: j.deadline,
+      formattedDeadline
     };
   });
 
-  const overallAvgDays = overallCount > 0 ? Math.round((overallTotalDays / overallCount) * 10) / 10 : null;
+  const overallAvgDays = countJobsWithDays > 0 ? Math.round((totalDaysAllJobs / countJobsWithDays) * 10) / 10 : null;
 
   return {
     overallAvgDays,

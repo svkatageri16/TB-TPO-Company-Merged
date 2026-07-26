@@ -688,6 +688,7 @@ export async function initDb() {
           additional_notes TEXT,
           application_start_date DATE,
           deadline DATE,
+          openings INT NOT NULL DEFAULT 1,
           status VARCHAR(50) DEFAULT 'OPEN',
           ended_at DATETIME DEFAULT NULL,
           end_reminder_sent_at DATETIME DEFAULT NULL,
@@ -1844,7 +1845,8 @@ export async function initDb() {
         { name: "ended_at", type: "DATETIME" },
         { name: "end_reminder_sent_at", type: "DATETIME" },
         { name: "pipeline_ended_at", type: "DATETIME" },
-        { name: "publish_destination", type: "VARCHAR(100) DEFAULT 'JOB_ONLY'" }
+        { name: "publish_destination", type: "VARCHAR(100) DEFAULT 'JOB_ONLY'" },
+        { name: "openings", type: "INT NOT NULL DEFAULT 1" }
       ];
 
       for (const col of columnsToAdd) {
@@ -2943,6 +2945,7 @@ async function runSqliteInit() {
       additional_notes TEXT,
       application_start_date DATE,
       deadline DATE,
+      openings INTEGER DEFAULT 1,
       status TEXT DEFAULT 'OPEN',
       ended_at DATETIME DEFAULT NULL,
       end_reminder_sent_at DATETIME DEFAULT NULL,
