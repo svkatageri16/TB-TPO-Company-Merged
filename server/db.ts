@@ -1161,6 +1161,9 @@ export async function initDb() {
           job_id INT NOT NULL,
           student_user_id INT NOT NULL,
           match_score INT,
+          matched_skills_json LONGTEXT,
+          recommendation_reason TEXT,
+          notification_status VARCHAR(50) DEFAULT 'SENT',
           notified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           created_by INT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -3543,6 +3546,9 @@ async function runSqliteInit() {
       job_id INTEGER NOT NULL,
       student_user_id INTEGER NOT NULL,
       match_score INTEGER,
+      matched_skills_json TEXT,
+      recommendation_reason TEXT,
+      notification_status TEXT DEFAULT 'SENT',
       notified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       created_by INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -3554,6 +3560,11 @@ async function runSqliteInit() {
 
   // Extra migrations/checks for SQLite
   try {
+    const recNotifCols = sqliteDb.prepare("PRAGMA table_info(recommendation_notifications)").all();
+    const recNotifColNames = recNotifCols.map((c: any) => c.name);
+    if (!recNotifColNames.includes("matched_skills_json")) sqliteDb.exec("ALTER TABLE recommendation_notifications ADD COLUMN matched_skills_json TEXT");
+    if (!recNotifColNames.includes("recommendation_reason")) sqliteDb.exec("ALTER TABLE recommendation_notifications ADD COLUMN recommendation_reason TEXT");
+    if (!recNotifColNames.includes("notification_status")) sqliteDb.exec("ALTER TABLE recommendation_notifications ADD COLUMN notification_status TEXT DEFAULT 'SENT'");
     const studentCols = sqliteDb.prepare("PRAGMA table_info(student_profiles)").all();
     const studentColNames = studentCols.map((c: any) => c.name);
     if (!studentColNames.includes("college_id")) sqliteDb.exec("ALTER TABLE student_profiles ADD COLUMN college_id INTEGER");

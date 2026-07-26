@@ -547,31 +547,37 @@ async function generateRecommendationReason(
 // 1. GET /api/companies/recommendations/jobs
 router.get("/recommendations/jobs", authenticate, async (req: any, res) => {
   try {
-    const userId = req.user.userId;
-    if (!userId) {
-      return res.status(401).json({ success: false, message: "User is not authenticated." });
-    }
+    const ctx = await getCompanyContext(req, "Recommendations View");
 
-    const [profiles]: any = await db.query("SELECT * FROM company_profiles WHERE user_id = ?", [userId]);
-    if (!profiles[0]) {
-      return res.status(404).json({ success: false, message: "Company profile not found for authenticated user." });
-    }
-
-    const companyId = profiles[0].id;
-
-    const [jobs]: any = await db.query(`
+    let query = `
       SELECT J.*, 
              (SELECT COUNT(*) FROM job_stages JS WHERE JS.job_id = J.id) as stage_count,
              (SELECT COUNT(*) FROM job_applications JA WHERE JA.job_id = J.id) as total_applicants
       FROM jobs J
       WHERE J.company_id = ?
-      ORDER BY J.created_at DESC
-    `, [companyId]);
+    `;
+    const params: any[] = [ctx.companyId];
+
+    if (ctx.isSubHr) {
+      const [assignments]: any = await db.query(
+        "SELECT job_id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ?",
+        [ctx.companyId, ctx.userId]
+      );
+      if (assignments.length > 0) {
+        const assignedJobIds = assignments.map((a: any) => a.job_id);
+        query += ` AND J.id IN (${assignedJobIds.map(() => '?').join(',')})`;
+        params.push(...assignedJobIds);
+      }
+    }
+
+    query += ` ORDER BY J.created_at DESC`;
+
+    const [jobs]: any = await db.query(query, params);
 
     res.json({ success: true, data: jobs });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error fetching recommendation jobs:", error);
-    res.status(500).json({ success: false, message: "Error fetching company jobs." });
+    res.status(500).json({ success: false, message: error.message || "Error fetching company jobs." });
   }
 });
 
@@ -579,22 +585,32 @@ router.get("/recommendations/jobs", authenticate, async (req: any, res) => {
 router.post("/recommendations/:jobId/match", authenticate, async (req: any, res) => {
   try {
     const { jobId } = req.params;
-    const userId = req.user.userId;
+    const ctx = await getCompanyContext(req, "Recommendations View");
     
     const { minMatch = 10, maxMatch = 100, limit = 50, filters = {} } = req.body;
 
-    const [profiles]: any = await db.query("SELECT * FROM company_profiles WHERE user_id = ?", [userId]);
-    if (!profiles[0]) {
-      return res.status(404).json({ success: false, message: "Company profile not found." });
-    }
-    const companyId = profiles[0].id;
-
     // Verify job belongs to company
-    const [jobs]: any = await db.query("SELECT * FROM jobs WHERE id = ? AND company_id = ?", [jobId, companyId]);
+    const [jobs]: any = await db.query("SELECT * FROM jobs WHERE id = ? AND company_id = ?", [jobId, ctx.companyId]);
     if (!jobs[0]) {
       return res.status(404).json({ success: false, message: "Job not found or access denied." });
     }
     const job = jobs[0];
+
+    if (ctx.isSubHr) {
+      const [assignments]: any = await db.query(
+        "SELECT id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ?",
+        [ctx.companyId, ctx.userId]
+      );
+      if (assignments.length > 0) {
+        const [isAssigned]: any = await db.query(
+          "SELECT id FROM company_job_assignments WHERE job_id = ? AND assigned_hr_user_id = ?",
+          [jobId, ctx.userId]
+        );
+        if (isAssigned.length === 0) {
+          return res.status(403).json({ success: false, message: "Access denied: Job is not assigned to your HR account." });
+        }
+      }
+    }
 
     // Get job skills
     let jobSkills: string[] = [];
@@ -886,9 +902,9 @@ router.post("/recommendations/:jobId/match", authenticate, async (req: any, res)
       }
     });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error matching candidates:", error);
-    res.status(500).json({ success: false, message: "Error calculating candidate matches." });
+    res.status(500).json({ success: false, message: error.message || "Error calculating candidate matches." });
   }
 });
 
@@ -896,29 +912,26 @@ router.post("/recommendations/:jobId/match", authenticate, async (req: any, res)
 router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res) => {
   try {
     const { jobId } = req.params;
-    const { candidateUserIds, message: customMessage } = req.body;
-    const userId = req.user.userId;
+    const { candidateUserIds, message: customMessage, candidateDetails = {} } = req.body;
+    const ctx = await getCompanyContext(req, "Send Recommendation Notifications");
 
     if (!Array.isArray(candidateUserIds) || candidateUserIds.length === 0) {
       return res.status(400).json({ success: false, message: "Invalid candidate user IDs list." });
     }
 
     // Get company details
-    const [profiles]: any = await db.query("SELECT * FROM company_profiles WHERE user_id = ?", [userId]);
+    const [profiles]: any = await db.query("SELECT * FROM company_profiles WHERE id = ?", [ctx.companyId]);
     if (!profiles[0]) {
       return res.status(404).json({ success: false, message: "Company profile not found." });
     }
     const company = profiles[0];
-    const companyId = company.id;
 
     // Verify job belongs to company
-    const [jobs]: any = await db.query("SELECT * FROM jobs WHERE id = ? AND company_id = ?", [jobId, companyId]);
+    const [jobs]: any = await db.query("SELECT * FROM jobs WHERE id = ? AND company_id = ?", [jobId, ctx.companyId]);
     if (!jobs[0]) {
       return res.status(404).json({ success: false, message: "Job not found or access denied." });
     }
     const job = jobs[0];
-
-    const notifiedIds: number[] = [];
 
     for (const candUserId of candidateUserIds) {
       // Check for duplicate
@@ -927,7 +940,6 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
         [jobId, candUserId]
       );
       if (existingNotif.length > 0) {
-        // Skip duplicate
         continue;
       }
 
@@ -942,12 +954,17 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
       if (studentData.length === 0) continue;
       const student = studentData[0];
 
+      const details = candidateDetails[candUserId] || {};
+      const matchScore = details.matchScore || 0;
+      const matchedSkillsJson = details.matchedSkills ? JSON.stringify(details.matchedSkills) : null;
+      const recommendationReason = details.recommendationReason || null;
+
       // Track notification
       await db.query(`
         INSERT INTO recommendation_notifications 
-        (company_id, job_id, student_user_id, match_score, notified_at, created_by, created_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
-      `, [companyId, jobId, candUserId, 0, userId]);
+        (company_id, job_id, student_user_id, match_score, matched_skills_json, recommendation_reason, notification_status, notified_at, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'SENT', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+      `, [ctx.companyId, jobId, candUserId, matchScore, matchedSkillsJson, recommendationReason, ctx.userId]);
 
       // Create platform notification
       const notificationTitle = `Company Interest: ${company.company_name} is interested in your profile`;
@@ -984,15 +1001,152 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
         </div>
       `;
 
-      await sendEmail(student.email, emailSubject, emailHtml);
-      notifiedIds.push(candUserId);
+      try {
+        await sendEmail(student.email, emailSubject, emailHtml);
+      } catch (err) {
+        console.error("Error sending interest email:", err);
+      }
     }
 
-    res.json({ success: true, message: `Successfully notified ${notifiedIds.length} candidates.` });
+    await logCompanyAudit(
+      ctx.companyId,
+      ctx.userId,
+      ctx.actorName,
+      ctx.roleType,
+      "NOTIFY_RECOMMENDED_CANDIDATES",
+      "Hiring Copilot",
+      `Notified ${candidateUserIds.length} candidate(s) for job "${job.title}".`,
+      "jobs",
+      Number(jobId),
+      { candidateUserIds }
+    );
 
-  } catch (error) {
-    console.error("Error notifying candidates:", error);
-    res.status(500).json({ success: false, message: "Error sending notifications." });
+    res.json({ success: true, message: `Interest notifications sent to ${candidateUserIds.length} candidate(s).` });
+  } catch (error: any) {
+    console.error("Error sending interest notifications:", error);
+    res.status(500).json({ success: false, message: error.message || "Error sending interest notifications." });
+  }
+});
+
+// 4. GET /api/companies/recommendations/notified
+router.get("/recommendations/notified", authenticate, async (req: any, res) => {
+  try {
+    const ctx = await getCompanyContext(req, "Recommendations View");
+    const { jobId, search } = req.query;
+
+    let query = `
+      SELECT 
+        RN.id as notification_id,
+        RN.company_id,
+        RN.job_id,
+        RN.student_user_id,
+        RN.match_score,
+        RN.matched_skills_json,
+        RN.recommendation_reason,
+        RN.notification_status,
+        RN.notified_at,
+        RN.created_by,
+        J.title as job_title,
+        J.location as job_location,
+        SP.id as student_id,
+        SP.full_name as student_name,
+        SP.location as student_location,
+        SP.skills_json as student_skills_json,
+        CM.college_name,
+        U_cand.email as student_email,
+        U_notifier.email as notifier_email,
+        CHP.designation as notifier_designation,
+        CHP.role_type as notifier_role_type
+      FROM recommendation_notifications RN
+      JOIN jobs J ON RN.job_id = J.id
+      JOIN users U_cand ON RN.student_user_id = U_cand.id
+      LEFT JOIN student_profiles SP ON U_cand.id = SP.user_id
+      LEFT JOIN college_master CM ON SP.college_id = CM.id
+      LEFT JOIN users U_notifier ON RN.created_by = U_notifier.id
+      LEFT JOIN company_hr_profiles CHP ON RN.created_by = CHP.user_id AND CHP.company_id = RN.company_id
+      WHERE RN.company_id = ?
+    `;
+    const params: any[] = [ctx.companyId];
+
+    if (jobId) {
+      query += ` AND RN.job_id = ?`;
+      params.push(jobId);
+    }
+
+    if (ctx.isSubHr) {
+      const [assignments]: any = await db.query(
+        "SELECT job_id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ?",
+        [ctx.companyId, ctx.userId]
+      );
+      if (assignments.length > 0) {
+        const assignedJobIds = assignments.map((a: any) => a.job_id);
+        query += ` AND RN.job_id IN (${assignedJobIds.map(() => '?').join(',')})`;
+        params.push(...assignedJobIds);
+      }
+    }
+
+    if (search && String(search).trim()) {
+      const searchTerm = `%${String(search).trim()}%`;
+      query += ` AND (SP.full_name LIKE ? OR U_cand.email LIKE ? OR J.title LIKE ?)`;
+      params.push(searchTerm, searchTerm, searchTerm);
+    }
+
+    query += ` ORDER BY RN.notified_at DESC`;
+
+    const [notifiedRows]: any = await db.query(query, params);
+
+    const data = notifiedRows.map((row: any) => {
+      let matchedSkills: string[] = [];
+      if (row.matched_skills_json) {
+        try {
+          matchedSkills = typeof row.matched_skills_json === 'string' ? JSON.parse(row.matched_skills_json) : row.matched_skills_json;
+        } catch(e) {}
+      } else if (row.student_skills_json) {
+        try {
+          matchedSkills = typeof row.student_skills_json === 'string' ? JSON.parse(row.student_skills_json) : row.student_skills_json;
+        } catch(e) {}
+      }
+
+      let notifierLabel = "System Admin";
+      if (row.notifier_email) {
+        if (row.notifier_designation) {
+          notifierLabel = `${row.notifier_designation} (${row.notifier_email})`;
+        } else if (row.notifier_role_type === "SUB_HR") {
+          notifierLabel = `Sub HR (${row.notifier_email})`;
+        } else {
+          notifierLabel = `Super HR (${row.notifier_email})`;
+        }
+      } else if (row.created_by) {
+        notifierLabel = `Recruiter (ID ${row.created_by})`;
+      } else {
+        notifierLabel = "Not recorded";
+      }
+
+      return {
+        notificationId: row.notification_id,
+        jobId: row.job_id,
+        jobTitle: row.job_title || "Job Requirement",
+        jobLocation: row.job_location || "Remote",
+        studentId: row.student_id,
+        studentUserId: row.student_user_id,
+        studentName: row.student_name || "Anonymous Student",
+        studentEmail: row.student_email || "N/A",
+        studentLocation: row.student_location || "N/A",
+        collegeName: row.college_name || "N/A",
+        matchScore: row.match_score !== null && row.match_score !== undefined && row.match_score > 0 ? row.match_score : "Not recorded",
+        matchedSkills,
+        recommendationReason: row.recommendation_reason || "Not recorded",
+        notifiedAt: row.notified_at,
+        notificationStatus: row.notification_status || "Already Notified",
+        notifiedBy: notifierLabel,
+        notifierRole: row.notifier_role_type || (row.notifier_designation ? "SUB_HR" : "SUPER_HR")
+      };
+    });
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    console.error("Error fetching notified recommendations:", error);
+    res.status(500).json({ success: false, message: error.message || "Error fetching notified candidates." });
   }
 });
 
