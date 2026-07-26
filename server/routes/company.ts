@@ -933,13 +933,21 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
     }
     const job = jobs[0];
 
+    const insertedCandidateUserIds: number[] = [];
+    const alreadyNotifiedCandidateUserIds: number[] = [];
+    const failedCandidateUserIds: number[] = [];
+
     for (const candUserId of candidateUserIds) {
+      const numUserId = Number(candUserId);
+      if (!numUserId) continue;
+
       // Check for duplicate
       const [existingNotif]: any = await db.query(
         "SELECT id FROM recommendation_notifications WHERE job_id = ? AND student_user_id = ?",
-        [jobId, candUserId]
+        [jobId, numUserId]
       );
       if (existingNotif.length > 0) {
+        alreadyNotifiedCandidateUserIds.push(numUserId);
         continue;
       }
 
@@ -949,9 +957,12 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
         FROM users U
         LEFT JOIN student_profiles SP ON U.id = SP.user_id
         WHERE U.id = ?
-      `, [candUserId]);
+      `, [numUserId]);
 
-      if (studentData.length === 0) continue;
+      if (studentData.length === 0) {
+        failedCandidateUserIds.push(numUserId);
+        continue;
+      }
       const student = studentData[0];
 
       const details = candidateDetails[candUserId] || {};
@@ -964,7 +975,9 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
         INSERT INTO recommendation_notifications 
         (company_id, job_id, student_user_id, match_score, matched_skills_json, recommendation_reason, notification_status, notified_at, created_by, created_at)
         VALUES (?, ?, ?, ?, ?, ?, 'SENT', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
-      `, [ctx.companyId, jobId, candUserId, matchScore, matchedSkillsJson, recommendationReason, ctx.userId]);
+      `, [ctx.companyId, jobId, numUserId, matchScore, matchedSkillsJson, recommendationReason, ctx.userId]);
+
+      insertedCandidateUserIds.push(numUserId);
 
       // Create platform notification
       const notificationTitle = `Company Interest: ${company.company_name} is interested in your profile`;
@@ -973,14 +986,14 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
       await db.query(`
         INSERT INTO notifications (user_id, title, message, type, is_read, created_at)
         VALUES (?, ?, ?, 'INFO', 0, CURRENT_TIMESTAMP)
-      `, [candUserId, notificationTitle, notificationBody]);
+      `, [numUserId, notificationTitle, notificationBody]);
 
       // Send Email
       const emailSubject = `Recruitment Interest: ${job.title} at ${company.company_name}`;
       const emailHtml = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
           <h2 style="color: #4f46e5; margin-bottom: 20px;">Recruitment Interest Notification</h2>
-          <p>Hello <strong>${student.full_name}</strong>,</p>
+          <p>Hello <strong>${student.full_name || "Candidate"}</strong>,</p>
           <p>We are pleased to inform you that <strong>${company.company_name}</strong> is interested in your profile for the position of <strong>${job.title}</strong>!</p>
           
           <div style="background-color: #f7fafc; border-left: 4px solid #4f46e5; padding: 15px; margin: 20px 0; border-radius: 4px;">
@@ -1015,13 +1028,20 @@ router.post("/recommendations/:jobId/notify", authenticate, async (req: any, res
       ctx.roleType,
       "NOTIFY_RECOMMENDED_CANDIDATES",
       "Hiring Copilot",
-      `Notified ${candidateUserIds.length} candidate(s) for job "${job.title}".`,
+      `Notified ${insertedCandidateUserIds.length} candidate(s) for job "${job.title}".`,
       "jobs",
       Number(jobId),
-      { candidateUserIds }
+      { candidateUserIds: insertedCandidateUserIds }
     );
 
-    res.json({ success: true, message: `Interest notifications sent to ${candidateUserIds.length} candidate(s).` });
+    res.json({
+      success: true,
+      message: `Interest notifications sent to ${insertedCandidateUserIds.length} candidate(s).`,
+      insertedCandidateUserIds,
+      alreadyNotifiedCandidateUserIds,
+      failedCandidateUserIds,
+      insertedCount: insertedCandidateUserIds.length
+    });
   } catch (error: any) {
     console.error("Error sending interest notifications:", error);
     res.status(500).json({ success: false, message: error.message || "Error sending interest notifications." });
@@ -1033,6 +1053,8 @@ router.get("/recommendations/notified", authenticate, async (req: any, res) => {
   try {
     const ctx = await getCompanyContext(req, "Recommendations View");
     const { jobId, search } = req.query;
+
+    const cleanJobId = (jobId && jobId !== "undefined" && jobId !== "null" && String(jobId).trim() !== "") ? String(jobId).trim() : null;
 
     let query = `
       SELECT 
@@ -1068,9 +1090,9 @@ router.get("/recommendations/notified", authenticate, async (req: any, res) => {
     `;
     const params: any[] = [ctx.companyId];
 
-    if (jobId) {
+    if (cleanJobId) {
       query += ` AND RN.job_id = ?`;
-      params.push(jobId);
+      params.push(cleanJobId);
     }
 
     if (ctx.isSubHr) {

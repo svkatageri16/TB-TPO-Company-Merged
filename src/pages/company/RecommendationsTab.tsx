@@ -171,9 +171,12 @@ export function RecommendationsTab() {
       });
       if (res.data.success) {
         setNotifiedCandidates(res.data.data || []);
+      } else {
+        setErrorMsg("Failed to fetch notified candidates history.");
       }
     } catch (err: any) {
       console.error("Error fetching notified candidates:", err);
+      setErrorMsg(err.response?.data?.message || "Error fetching notified candidates history.");
     } finally {
       setLoadingNotified(false);
     }
@@ -266,21 +269,29 @@ export function RecommendationsTab() {
       });
 
       if (res.data.success) {
-        setSuccessMsg(`Successfully sent interest notice to ${selectedCandidateUserIds.length} candidate(s).`);
+        const confirmedIds: number[] = [
+          ...(res.data.insertedCandidateUserIds || []),
+          ...(res.data.alreadyNotifiedCandidateUserIds || [])
+        ];
+        const insertedCount = res.data.insertedCount !== undefined ? res.data.insertedCount : selectedCandidateUserIds.length;
+
+        setSuccessMsg(`Successfully sent interest notice to ${insertedCount} candidate(s).`);
         setShowNotifyModal(false);
         
-        // Update local state immediately without requiring reload
-        setCandidates(prev => prev.map(c => {
-          if (selectedCandidateUserIds.includes(c.userId)) {
-            return { ...c, alreadyNotified: true };
-          }
-          return c;
-        }));
+        // Update local state for server-confirmed candidates only
+        if (confirmedIds.length > 0) {
+          setCandidates(prev => prev.map(c => {
+            if (confirmedIds.includes(c.userId)) {
+              return { ...c, alreadyNotified: true };
+            }
+            return c;
+          }));
+        }
 
         setSelectedCandidateUserIds([]);
         
         // Refetch notified history so Tab 2 updates immediately
-        fetchNotifiedStudents();
+        await fetchNotifiedStudents();
       } else {
         setErrorMsg("Failed to send recruitment invitations.");
       }
