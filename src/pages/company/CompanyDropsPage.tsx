@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   Zap, Plus, Eye, MessageSquare, Share2, Calendar, 
   CheckCircle, X, Sparkles, AlertCircle, FileText, Globe,
-  Image as ImageIcon, Edit2, Trash2, Heart, Upload, ShieldCheck
+  Image as ImageIcon, Edit2, Trash2, Heart, Upload, ShieldCheck,
+  Loader2, RefreshCw
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import api from '../../services/api.ts';
@@ -11,7 +12,12 @@ interface UploadedMediaItem {
   mediaId: number;
   mediaUrl: string;
   fileName: string;
-  moderationStatus: string;
+  uploadStatus: 'UPLOADING' | 'UPLOADED' | 'FAILED';
+  uploadProgress: number;
+  moderationStatus: 'PENDING' | 'PROCESSING' | 'APPROVED' | 'REJECTED' | 'MODERATION_FAILED';
+  moderationReasonCode?: string;
+  uploadedAtMs: number;
+  slowWarningShown?: boolean;
 }
 
 interface DropPost {
@@ -90,19 +96,71 @@ export function CompanyDropsPage() {
     }
   };
 
+  // Polling effect for pending AI moderation status
+  useEffect(() => {
+    if (!isCreateModalOpen) return;
+
+    const pendingItems = uploadedImages.filter(
+      item => item.uploadStatus === 'UPLOADED' && ['PENDING', 'PROCESSING'].includes(item.moderationStatus)
+    );
+
+    if (pendingItems.length === 0) return;
+
+    let isMounted = true;
+
+    const interval = setInterval(async () => {
+      const now = Date.now();
+
+      for (const item of pendingItems) {
+        try {
+          const res = await api.get(`/jobs/drops/media/${item.mediaId}/status`);
+          if (!isMounted) break;
+
+          if (res.data?.success && res.data?.data) {
+            const newStatus = res.data.data.moderationStatus;
+            const reasonCode = res.data.data.moderationReasonCode;
+
+            setUploadedImages(prev => prev.map(m => {
+              if (m.mediaId === item.mediaId) {
+                const elapsedSeconds = (now - m.uploadedAtMs) / 1000;
+                const slowWarning = elapsedSeconds >= 10 && ['PENDING', 'PROCESSING'].includes(newStatus);
+                return {
+                  ...m,
+                  moderationStatus: newStatus,
+                  moderationReasonCode: reasonCode,
+                  slowWarningShown: slowWarning
+                };
+              }
+              return m;
+            }));
+          }
+        } catch (err) {
+          console.warn(`[POLLING] Error checking status for media ${item.mediaId}:`, err);
+        }
+      }
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [uploadedImages, isCreateModalOpen]);
+
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    if (uploadedImages.length + files.length > 4) {
-      toast.error("Maximum 4 images allowed per drop.");
-      return;
-    }
-
     const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    let activeCount = uploadedImages.length;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+
+      if (activeCount >= 4) {
+        toast.error(`Maximum 4 images allowed per drop. Image '${file.name}' was rejected.`);
+        continue;
+      }
+
       if (!validTypes.includes(file.type)) {
         toast.error(`Invalid format: ${file.name}. Only JPEG, PNG and WebP are allowed.`);
         continue;
@@ -112,38 +170,95 @@ export function CompanyDropsPage() {
         continue;
       }
 
+      activeCount++;
+
+      const tempId = -Date.now() - Math.floor(Math.random() * 1000);
+      const localPreviewUrl = URL.createObjectURL(file);
+
+      const placeholderItem: UploadedMediaItem = {
+        mediaId: tempId,
+        mediaUrl: localPreviewUrl,
+        fileName: file.name,
+        uploadStatus: 'UPLOADING',
+        uploadProgress: 0,
+        moderationStatus: 'PENDING',
+        uploadedAtMs: Date.now()
+      };
+
+      setUploadedImages(prev => [...prev, placeholderItem]);
+      setUploadingImage(true);
+
       try {
-        setUploadingImage(true);
         const formData = new FormData();
         formData.append("image", file);
 
         const uploadRes = await api.post("/jobs/drops/upload-image", formData, {
-          headers: { "Content-Type": "multipart/form-data" }
+          headers: { "Content-Type": "multipart/form-data" },
+          onUploadProgress: (progressEvent) => {
+            if (progressEvent.total) {
+              const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+              setUploadedImages(prev => prev.map(m => m.mediaId === tempId ? { ...m, uploadProgress: percent } : m));
+            }
+          }
         });
 
         const rawData = uploadRes.data || {};
-        const returnedMediaId = rawData.mediaId || rawData.data?.mediaId;
-        const validMediaId = Number(returnedMediaId);
+        const returnedMediaId = Number(rawData.mediaId || rawData.data?.mediaId);
 
-        if (rawData.success && Number.isInteger(validMediaId) && validMediaId > 0) {
-          const localPreviewUrl = URL.createObjectURL(file);
-          const newItem: UploadedMediaItem = {
-            mediaId: validMediaId,
-            mediaUrl: localPreviewUrl,
-            fileName: rawData.fileName || rawData.data?.fileName || file.name,
-            moderationStatus: rawData.moderationStatus || rawData.data?.moderationStatus || "APPROVED"
-          };
-          setUploadedImages(prev => [...prev, newItem]);
-          toast.success(`Uploaded and verified ${file.name}`);
+        if (rawData.success && Number.isInteger(returnedMediaId) && returnedMediaId > 0) {
+          setUploadedImages(prev => prev.map(m => {
+            if (m.mediaId === tempId) {
+              return {
+                ...m,
+                mediaId: returnedMediaId,
+                uploadStatus: 'UPLOADED',
+                uploadProgress: 100,
+                moderationStatus: rawData.moderationStatus || rawData.data?.moderationStatus || 'PENDING',
+                uploadedAtMs: Date.now()
+              };
+            }
+            return m;
+          }));
+          toast.success(`Uploaded ${file.name}. Verifying image safety...`);
         } else {
+          setUploadedImages(prev => prev.filter(m => m.mediaId !== tempId));
+          try { URL.revokeObjectURL(localPreviewUrl); } catch (e) {}
           toast.error(rawData.message || `Failed to upload ${file.name}`);
         }
       } catch (err: any) {
         console.error("Image upload error:", err);
-        toast.error(err.response?.data?.message || `Failed to upload and moderate ${file.name}`);
+        setUploadedImages(prev => prev.filter(m => m.mediaId !== tempId));
+        try { URL.revokeObjectURL(localPreviewUrl); } catch (e) {}
+        toast.error(err.response?.data?.message || `Failed to upload ${file.name}`);
       } finally {
         setUploadingImage(false);
       }
+    }
+  };
+
+  const handleRetryModeration = async (mediaId: number) => {
+    try {
+      setUploadedImages(prev => prev.map(m => {
+        if (m.mediaId === mediaId) {
+          return {
+            ...m,
+            moderationStatus: 'PENDING',
+            uploadedAtMs: Date.now(),
+            slowWarningShown: false
+          };
+        }
+        return m;
+      }));
+
+      const res = await api.post(`/jobs/drops/media/${mediaId}/retry-moderation`);
+      if (res.data?.success) {
+        toast.success("Image safety verification retrying...");
+      } else {
+        toast.error(res.data?.message || "Failed to retry verification.");
+      }
+    } catch (err: any) {
+      console.error("Retry moderation error:", err);
+      toast.error(err.response?.data?.message || "Failed to retry safety verification.");
     }
   };
 
@@ -190,7 +305,10 @@ export function CompanyDropsPage() {
         mediaId: Number(m.id || m.mediaId),
         mediaUrl: m.url || m.mediaUrl || `/api/jobs/drops/media/${m.id || m.mediaId}`,
         fileName: m.fileName || '',
-        moderationStatus: m.moderationStatus || 'APPROVED'
+        uploadStatus: 'UPLOADED',
+        uploadProgress: 100,
+        moderationStatus: m.moderationStatus || 'APPROVED',
+        uploadedAtMs: Date.now()
       })));
     } else if (drop.images && Array.isArray(drop.images)) {
       const extracted: UploadedMediaItem[] = [];
@@ -203,7 +321,10 @@ export function CompanyDropsPage() {
               mediaId: mId,
               mediaUrl: img,
               fileName: '',
-              moderationStatus: 'APPROVED'
+              uploadStatus: 'UPLOADED',
+              uploadProgress: 100,
+              moderationStatus: 'APPROVED',
+              uploadedAtMs: Date.now()
             });
           }
         }
@@ -662,22 +783,83 @@ export function CompanyDropsPage() {
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {uploadedImages.map((imgItem, idx) => (
-                    <div key={imgItem.mediaId || idx} className="relative group rounded-xl overflow-hidden border border-slate-200 aspect-video bg-slate-100">
-                      <img src={imgItem.mediaUrl} alt={imgItem.fileName || "Drop media"} className="w-full h-full object-cover" />
-                      <button
-                        type="button"
-                        onClick={() => removeImage(idx)}
-                        className="absolute top-1 right-1 bg-slate-900/80 text-white rounded-full p-1 hover:bg-rose-600 transition-colors cursor-pointer"
-                      >
-                        <X size={12} />
-                      </button>
+                    <div key={imgItem.mediaId || idx} className="relative rounded-xl border border-slate-200 bg-slate-50 p-2.5 flex flex-col justify-between">
+                      <div className="relative aspect-video rounded-lg overflow-hidden bg-slate-900 border border-slate-200">
+                        <img src={imgItem.mediaUrl} alt={imgItem.fileName || "Drop media"} className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => removeImage(idx)}
+                          className="absolute top-1.5 right-1.5 bg-slate-900/80 text-white rounded-full p-1 hover:bg-rose-600 transition-colors cursor-pointer z-10"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+
+                      <div className="mt-2 space-y-1">
+                        {imgItem.uploadStatus === 'UPLOADING' && (
+                          <div className="space-y-1">
+                            <div className="flex justify-between items-center text-[10px] font-bold text-amber-600">
+                              <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Uploading image...</span>
+                              <span>{imgItem.uploadProgress || 0}%</span>
+                            </div>
+                            <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                              <div className="bg-amber-500 h-full transition-all duration-300" style={{ width: `${imgItem.uploadProgress || 0}%` }} />
+                            </div>
+                          </div>
+                        )}
+
+                        {imgItem.uploadStatus === 'UPLOADED' && (imgItem.moderationStatus === 'PENDING' || imgItem.moderationStatus === 'PROCESSING') && (
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-600">
+                              <Loader2 size={11} className="animate-spin" />
+                              <span>Image uploaded. Verifying image safety...</span>
+                            </div>
+                            {imgItem.slowWarningShown && (
+                              <p className="text-[9px] font-semibold text-amber-700 bg-amber-50 p-1.5 rounded-md border border-amber-200">
+                                Verification is taking longer than usual. Please keep this page open.
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {imgItem.moderationStatus === 'APPROVED' && (
+                          <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-600">
+                            <CheckCircle size={12} />
+                            <span>Image verified and ready</span>
+                          </div>
+                        )}
+
+                        {imgItem.moderationStatus === 'REJECTED' && (
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1 text-[10px] font-bold text-rose-600">
+                              <AlertCircle size={12} />
+                              <span>This image could not be accepted. Please choose another image.</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {imgItem.moderationStatus === 'MODERATION_FAILED' && (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[10px] font-bold text-amber-700">
+                              <span className="flex items-center gap-1"><AlertCircle size={12} /> Image verification could not be completed. Please retry.</span>
+                              <button
+                                type="button"
+                                onClick={() => handleRetryModeration(imgItem.mediaId)}
+                                className="px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded border border-indigo-200 font-bold flex items-center gap-1 text-[9px] cursor-pointer shrink-0 ml-1"
+                              >
+                                <RefreshCw size={10} /> Retry
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ))}
 
                   {uploadedImages.length < 4 && (
-                    <label className="border-2 border-dashed border-slate-200 hover:border-indigo-300 bg-slate-50/50 rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer transition-colors aspect-video text-center">
+                    <label className="border-2 border-dashed border-slate-200 hover:border-indigo-300 bg-slate-50/50 rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer transition-colors min-h-[110px] text-center">
                       <Upload size={18} className="text-slate-400 mb-1" />
                       <span className="text-[9px] font-bold uppercase text-slate-500">Upload Image</span>
                       <span className="text-[8px] text-slate-400 mt-0.5">JPEG, PNG, WebP &lt; 5MB</span>
@@ -696,26 +878,48 @@ export function CompanyDropsPage() {
             </form>
 
             {/* Footer */}
-            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => setIsCreateModalOpen(false)}
-                disabled={submitting}
-                className="px-5 py-2.5 border border-slate-200 bg-white hover:bg-slate-50 text-slate-500 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all disabled:opacity-50 cursor-pointer"
-                id="cancel-create-drop"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSubmitDrop}
-                disabled={submitting || uploadingImage}
-                className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase tracking-widest text-[10px] transition-all disabled:opacity-50 flex items-center gap-2 shadow-md shadow-indigo-500/10 cursor-pointer"
-                id="submit-create-drop"
-              >
-                <Globe size={14} />
-                {submitting ? "Moderating & Publishing..." : (editingDrop ? "Save Changes" : "Broadcast Update")}
-              </button>
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="text-[10px] font-semibold text-slate-500">
+                {uploadedImages.some(img => img.uploadStatus === 'UPLOADING') && (
+                  <span className="text-amber-600 font-bold">Uploading attached images...</span>
+                )}
+                {!uploadedImages.some(img => img.uploadStatus === 'UPLOADING') && uploadedImages.some(img => ['PENDING', 'PROCESSING'].includes(img.moderationStatus)) && (
+                  <span className="text-indigo-600 font-bold flex items-center gap-1">
+                    <Loader2 size={11} className="animate-spin" /> Verifying image safety...
+                  </span>
+                )}
+                {uploadedImages.some(img => img.moderationStatus === 'REJECTED' || img.moderationStatus === 'MODERATION_FAILED') && (
+                  <span className="text-rose-600 font-bold">Remove or retry unverified images to post drop.</span>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateModalOpen(false)}
+                  disabled={submitting}
+                  className="px-5 py-2.5 border border-slate-200 bg-white hover:bg-slate-50 text-slate-500 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all disabled:opacity-50 cursor-pointer"
+                  id="cancel-create-drop"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSubmitDrop}
+                  disabled={
+                    submitting || 
+                    uploadingImage || 
+                    uploadedImages.some(img => img.uploadStatus === 'UPLOADING') ||
+                    uploadedImages.some(img => ['PENDING', 'PROCESSING'].includes(img.moderationStatus)) ||
+                    uploadedImages.some(img => img.moderationStatus === 'REJECTED' || img.moderationStatus === 'MODERATION_FAILED')
+                  }
+                  className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase tracking-widest text-[10px] transition-all disabled:opacity-50 flex items-center gap-2 shadow-md shadow-indigo-500/10 cursor-pointer"
+                  id="submit-create-drop"
+                >
+                  <Globe size={14} />
+                  {submitting ? "Publishing..." : (editingDrop ? "Save Changes" : "Broadcast Update")}
+                </button>
+              </div>
             </div>
 
           </div>
