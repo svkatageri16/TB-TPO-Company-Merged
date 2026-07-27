@@ -180,9 +180,64 @@ async function performQuery(sql: string, params: any[] = []) {
   }
 }
 
+export async function runTransaction(fn: (tx: { query: (sql: string, params?: any[]) => Promise<any> }) => Promise<any>) {
+  if (useMySQL && pool) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const txClient = {
+        query: async (sql: string, params: any[] = []) => {
+          const processedParams = (params || []).map(p => {
+            if (p instanceof Date) {
+              return p.toISOString().slice(0, 19).replace('T', ' ');
+            }
+            return p;
+          });
+          const [results] = await conn.execute(sql, processedParams);
+          return [results];
+        },
+        execute: async (sql: string, params: any[] = []) => {
+          const processedParams = (params || []).map(p => {
+            if (p instanceof Date) {
+              return p.toISOString().slice(0, 19).replace('T', ' ');
+            }
+            return p;
+          });
+          const [results] = await conn.execute(sql, processedParams);
+          return [results];
+        }
+      };
+      const res = await fn(txClient);
+      await conn.commit();
+      return res;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  } else {
+    if (!sqliteDb) setupSQLite();
+    sqliteDb.prepare("BEGIN TRANSACTION").run();
+    try {
+      const txClient = {
+        query: async (sql: string, params: any[] = []) => performQuery(sql, params),
+        execute: async (sql: string, params: any[] = []) => performQuery(sql, params)
+      };
+      const res = await fn(txClient);
+      sqliteDb.prepare("COMMIT").run();
+      return res;
+    } catch (err) {
+      sqliteDb.prepare("ROLLBACK").run();
+      throw err;
+    }
+  }
+}
+
 export const db = {
   query: performQuery,
   execute: performQuery, // Alias for mysql2 compatibility
+  transaction: runTransaction,
   get useMySQL() { return useMySQL; }
 };
 
@@ -1398,6 +1453,69 @@ export async function initDb() {
         console.error("Error migrating recommendation_notifications columns:", e);
       }
 
+      // Add missing drops columns and engagement tables for MySQL
+      try {
+        const [dropCols]: any = await connection.query("SHOW COLUMNS FROM drops");
+        const dropColNames = dropCols.map((c: any) => c.Field);
+        const requiredDropCols = [
+          { name: "custom_label", type: "VARCHAR(100) DEFAULT NULL" },
+          { name: "image_url", type: "LONGTEXT DEFAULT NULL" },
+          { name: "images_json", type: "JSON DEFAULT NULL" },
+          { name: "likes_count", type: "INT DEFAULT 0" },
+          { name: "moderation_status", type: "VARCHAR(50) DEFAULT 'APPROVED'" },
+          { name: "moderation_reason", type: "VARCHAR(255) DEFAULT NULL" }
+        ];
+
+        for (const col of requiredDropCols) {
+          if (!dropColNames.includes(col.name)) {
+            console.log(`📡 Adding missing column ${col.name} to drops...`);
+            await connection.query(`ALTER TABLE drops ADD COLUMN ${col.name} ${col.type}`);
+          }
+        }
+      } catch (e) {
+        console.error("Error migrating drops columns:", e);
+      }
+
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS drop_views (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            drop_id INT NOT NULL,
+            viewer_user_id INT NOT NULL,
+            viewed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_drop_viewer (drop_id, viewer_user_id),
+            FOREIGN KEY (drop_id) REFERENCES drops(id) ON DELETE CASCADE,
+            FOREIGN KEY (viewer_user_id) REFERENCES users(id) ON DELETE CASCADE
+          );
+        `);
+
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS drop_likes (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            drop_id INT NOT NULL,
+            user_id INT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_drop_like (drop_id, user_id),
+            FOREIGN KEY (drop_id) REFERENCES drops(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+          );
+        `);
+
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS drop_comments (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            drop_id INT NOT NULL,
+            user_id INT NOT NULL,
+            comment_text TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (drop_id) REFERENCES drops(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+          );
+        `);
+      } catch (e) {
+        console.error("Error creating drop engagement tables:", e);
+      }
+
       // --- ENTERPRISE INTERVIEW PLATFORM TABLES (MySQL Versions) ---
       try {
         await connection.query(`
@@ -2335,6 +2453,120 @@ export async function initDb() {
     console.log("🧾 company_audit_logs table initialized successfully.");
   } catch (err) {
     console.error("❌ Failed to initialize company_audit_logs table:", err);
+  }
+
+  // Initialize company drops and media tables
+  try {
+    await performQuery(`
+      CREATE TABLE IF NOT EXISTS drops (
+        id INTEGER PRIMARY KEY ${useMySQL ? 'AUTO_INCREMENT' : 'AUTOINCREMENT'},
+        company_id INT NOT NULL,
+        job_id INT DEFAULT NULL,
+        created_by_user_id INT NULL,
+        title VARCHAR(255) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        custom_label VARCHAR(100) DEFAULT NULL,
+        description TEXT NOT NULL,
+        location VARCHAR(255) DEFAULT NULL,
+        scheduled_at DATETIME DEFAULT NULL,
+        status VARCHAR(20) DEFAULT 'ACTIVE',
+        views_count INT DEFAULT 0,
+        likes_count INT DEFAULT 0,
+        comments_count INT DEFAULT 0,
+        shares_count INT DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    try { await performQuery(`ALTER TABLE drops ADD COLUMN custom_label VARCHAR(100) DEFAULT NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drops ADD COLUMN created_by_user_id INT NULL`); } catch (e) {}
+
+    await performQuery(`
+      CREATE TABLE IF NOT EXISTS drop_views (
+        id INTEGER PRIMARY KEY ${useMySQL ? 'AUTO_INCREMENT' : 'AUTOINCREMENT'},
+        drop_id INT NOT NULL,
+        viewer_user_id INT NOT NULL,
+        viewed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(drop_id, viewer_user_id)
+      )
+    `);
+
+    await performQuery(`
+      CREATE TABLE IF NOT EXISTS drop_likes (
+        id INTEGER PRIMARY KEY ${useMySQL ? 'AUTO_INCREMENT' : 'AUTOINCREMENT'},
+        drop_id INT NOT NULL,
+        user_id INT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(drop_id, user_id)
+      )
+    `);
+
+    await performQuery(`
+      CREATE TABLE IF NOT EXISTS drop_comments (
+        id INTEGER PRIMARY KEY ${useMySQL ? 'AUTO_INCREMENT' : 'AUTOINCREMENT'},
+        drop_id INT NOT NULL,
+        user_id INT NOT NULL,
+        comment TEXT NOT NULL,
+        parent_comment_id INT DEFAULT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await performQuery(`
+      CREATE TABLE IF NOT EXISTS drop_media (
+        id INTEGER PRIMARY KEY ${useMySQL ? 'AUTO_INCREMENT' : 'AUTOINCREMENT'},
+        company_id INT NULL,
+        drop_id INT NULL DEFAULT NULL,
+        uploaded_by_user_id INT NULL DEFAULT NULL,
+        storage_key VARCHAR(255) NULL,
+        sanitized_original_name VARCHAR(255) NULL,
+        file_url VARCHAR(500) NULL,
+        file_name VARCHAR(255) NULL,
+        mime_type VARCHAR(100) NULL,
+        size_bytes INT DEFAULT 0,
+        width INT DEFAULT 0,
+        height INT DEFAULT 0,
+        content_hash VARCHAR(64) NULL,
+        moderation_status VARCHAR(20) DEFAULT 'PENDING',
+        moderation_reason_code VARCHAR(50) DEFAULT 'SAFE',
+        moderation_provider VARCHAR(50) DEFAULT 'GEMINI',
+        moderation_model VARCHAR(50) DEFAULT 'gemini-2.5-flash',
+        moderated_at DATETIME NULL,
+        status VARCHAR(20) DEFAULT 'PENDING',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Idempotent column additions for drop_media
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN company_id INT NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN uploaded_by_user_id INT NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN storage_key VARCHAR(255) NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN sanitized_original_name VARCHAR(255) NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN mime_type VARCHAR(100) NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN size_bytes INT DEFAULT 0`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN width INT DEFAULT 0`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN height INT DEFAULT 0`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN content_hash VARCHAR(64) NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN moderation_status VARCHAR(20) DEFAULT 'PENDING'`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN moderation_reason_code VARCHAR(50) DEFAULT 'SAFE'`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN moderation_provider VARCHAR(50) DEFAULT 'GEMINI'`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN moderation_model VARCHAR(50) DEFAULT 'gemini-2.5-flash'`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN moderated_at DATETIME NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN status VARCHAR(20) DEFAULT 'PENDING'`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drop_media ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`); } catch (e) {}
+
+    // Indexes for query performance
+    try { await performQuery(`CREATE INDEX idx_drop_media_company ON drop_media(company_id)`); } catch (e) {}
+    try { await performQuery(`CREATE INDEX idx_drop_media_drop ON drop_media(drop_id)`); } catch (e) {}
+    try { await performQuery(`CREATE INDEX idx_drop_media_status ON drop_media(status)`); } catch (e) {}
+    try { await performQuery(`CREATE INDEX idx_drop_media_mod_status ON drop_media(moderation_status)`); } catch (e) {}
+    try { await performQuery(`CREATE INDEX idx_drops_company_status ON drops(company_id, status)`); } catch (e) {}
+
+    console.log("📢 company drops and media tables initialized successfully.");
+  } catch (err) {
+    console.error("❌ Failed to initialize company drops tables:", err);
   }
 
   // Seed Default Super Admin

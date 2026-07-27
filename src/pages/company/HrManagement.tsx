@@ -70,7 +70,10 @@ const ALL_PERMISSIONS = [
   { key: "Assessments View", label: "Assessments View", desc: "View test submissions and scoring details" },
   { key: "Create/Edit Tests", label: "Create/Edit Tests", desc: "Manage custom platform assessments and questionnaires" },
   { key: "Recommendations View", label: "Recommendations View", desc: "View AI recommendations and matches" },
-  { key: "Drops View", label: "Drops View", desc: "Access drop management" },
+  { key: "Drops View", label: "Drops View", desc: "Access drop management & view drops history" },
+  { key: "Drops Create", label: "Drops Create", desc: "Post new company drops and updates" },
+  { key: "Drops Edit", label: "Drops Edit", desc: "Modify published company drops" },
+  { key: "Drops Delete", label: "Drops Delete", desc: "Remove published company drops" },
   { key: "Analytics View", label: "Analytics View", desc: "View recruitment statistics and reports" },
   { key: "Company Profile View", label: "Company Profile View", desc: "View and edit corporate details" },
   { key: "Audit Trail View Own", label: "Audit Trail View Own", desc: "View own activities/logs in the audit trail" }

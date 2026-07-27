@@ -80,6 +80,11 @@ async function startServer() {
 
   // Hardened serving of /uploads preventing RCE, content injection, and script execution
   app.use("/uploads", (req, res, next) => {
+    // Block direct static access to Company Drop uploads (must be fetched via status-aware media API)
+    if (req.path.startsWith("/drops") || req.path.startsWith("drops")) {
+      return res.status(403).json({ error: "Access denied. Drop media must be accessed through secure media endpoints." });
+    }
+
     const ext = path.extname(req.path).toLowerCase();
     const bannedExtensions = ['.js', '.jsx', '.ts', '.tsx', '.sh', '.bash', '.php', '.exe', '.bat', '.cmd', '.py', '.pl', '.html', '.htm', '.jsp', '.asp', '.aspx', '.json'];
     if (bannedExtensions.includes(ext)) {
