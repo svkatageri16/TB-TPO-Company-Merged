@@ -75,7 +75,6 @@
     "@types/multer": "^2.1.0",
     "@types/node": "^22.14.0",
     "@types/papaparse": "^5.5.2",
-    "@types/sharp": "^0.32.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.28.1",
     "tailwindcss": "^4.1.14",
