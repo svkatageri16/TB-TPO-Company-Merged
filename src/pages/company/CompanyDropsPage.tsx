@@ -121,18 +121,22 @@ export function CompanyDropsPage() {
           headers: { "Content-Type": "multipart/form-data" }
         });
 
-        if (uploadRes.data.success && uploadRes.data.mediaId) {
+        const rawData = uploadRes.data || {};
+        const returnedMediaId = rawData.mediaId || rawData.data?.mediaId;
+        const validMediaId = Number(returnedMediaId);
+
+        if (rawData.success && Number.isInteger(validMediaId) && validMediaId > 0) {
           const localPreviewUrl = URL.createObjectURL(file);
           const newItem: UploadedMediaItem = {
-            mediaId: Number(uploadRes.data.mediaId),
+            mediaId: validMediaId,
             mediaUrl: localPreviewUrl,
-            fileName: uploadRes.data.fileName || file.name,
-            moderationStatus: uploadRes.data.moderationStatus || "APPROVED"
+            fileName: rawData.fileName || rawData.data?.fileName || file.name,
+            moderationStatus: rawData.moderationStatus || rawData.data?.moderationStatus || "APPROVED"
           };
           setUploadedImages(prev => [...prev, newItem]);
           toast.success(`Uploaded and verified ${file.name}`);
         } else {
-          toast.error(uploadRes.data.message || `Failed to upload ${file.name}`);
+          toast.error(rawData.message || `Failed to upload ${file.name}`);
         }
       } catch (err: any) {
         console.error("Image upload error:", err);
@@ -241,16 +245,25 @@ export function CompanyDropsPage() {
       return;
     }
 
+    if (uploadingImage) {
+      toast.error("Please wait for all images to finish uploading.");
+      return;
+    }
+
     try {
       setSubmitting(true);
-      const mediaIds = uploadedImages.map(item => item.mediaId);
+      const validMediaIds = uploadedImages
+        .map(item => Number(item.mediaId))
+        .filter(id => Number.isInteger(id) && id > 0);
+      const uniqueMediaIds = Array.from(new Set(validMediaIds));
+
       const payload = {
         title: title.trim(),
         type: selectedType,
         customLabel: selectedType === 'CUSTOM' ? customLabel.trim() : null,
         description: description.trim(),
         jobId: selectedJobId ? parseInt(selectedJobId, 10) : null,
-        mediaIds
+        mediaIds: uniqueMediaIds
       };
 
       let res;
@@ -696,7 +709,7 @@ export function CompanyDropsPage() {
               <button
                 type="button"
                 onClick={handleSubmitDrop}
-                disabled={submitting}
+                disabled={submitting || uploadingImage}
                 className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase tracking-widest text-[10px] transition-all disabled:opacity-50 flex items-center gap-2 shadow-md shadow-indigo-500/10 cursor-pointer"
                 id="submit-create-drop"
               >

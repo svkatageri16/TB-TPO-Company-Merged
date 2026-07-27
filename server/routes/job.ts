@@ -2266,26 +2266,41 @@ router.post(["/drops", "/drops/create", "/company/drops/create", "/jobs/drops/cr
     }
 
     if (requestedMediaIds.length > 0) {
+      const uniqueMediaIds = Array.from(new Set(requestedMediaIds));
+      const placeholders = uniqueMediaIds.map(() => "?").join(",");
+
       const [mediaRows]: any = await db.query(
-        `SELECT id, company_id, moderation_status, status, drop_id FROM drop_media WHERE id IN (?)`,
-        [requestedMediaIds]
+        `SELECT id, company_id, moderation_status, status, drop_id FROM drop_media WHERE id IN (${placeholders})`,
+        [...uniqueMediaIds]
       );
 
-      if (mediaRows.length !== requestedMediaIds.length) {
-        return res.status(400).json({ success: false, message: "One or more selected media items do not exist." });
+      const foundMap = new Map<number, any>();
+      if (Array.isArray(mediaRows)) {
+        for (const row of mediaRows) {
+          foundMap.set(Number(row.id), row);
+        }
       }
 
-      for (const m of mediaRows) {
-        if (m.company_id !== companyId) {
+      for (const id of uniqueMediaIds) {
+        const m = foundMap.get(id);
+        if (!m) {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} not found in drop_media database.`);
+          return res.status(400).json({ success: false, message: "One or more selected media items do not exist." });
+        }
+        if (Number(m.company_id) !== Number(companyId)) {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} belongs to company ${m.company_id}, expected ${companyId}.`);
           return res.status(403).json({ success: false, message: "Forbidden: Selected media item belongs to another company." });
         }
         if (m.moderation_status !== 'APPROVED') {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} moderation status is ${m.moderation_status}.`);
           return res.status(400).json({ success: false, message: "One or more selected media items have not passed safety moderation." });
         }
         if (m.status === 'DELETED') {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} status is DELETED.`);
           return res.status(400).json({ success: false, message: "One or more selected media items are deleted." });
         }
         if (m.drop_id !== null) {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} is already attached to drop_id ${m.drop_id}.`);
           return res.status(400).json({ success: false, message: "One or more selected media items are already attached to another drop." });
         }
       }
@@ -2311,9 +2326,11 @@ router.post(["/drops", "/drops/create", "/company/drops/create", "/jobs/drops/cr
       const newDropId = result.insertId;
 
       if (requestedMediaIds.length > 0) {
+        const uniqueMediaIds = Array.from(new Set(requestedMediaIds));
+        const placeholders = uniqueMediaIds.map(() => "?").join(",");
         await tx.query(
-          `UPDATE drop_media SET drop_id = ?, status = 'APPROVED' WHERE id IN (?) AND company_id = ?`,
-          [newDropId, requestedMediaIds, companyId]
+          `UPDATE drop_media SET drop_id = ?, status = 'APPROVED' WHERE id IN (${placeholders}) AND company_id = ?`,
+          [newDropId, ...uniqueMediaIds, companyId]
         );
       }
 
@@ -2429,26 +2446,41 @@ const handleUpdateDrop = async (req: any, res: any) => {
     }
 
     if (requestedMediaIds.length > 0) {
+      const uniqueMediaIds = Array.from(new Set(requestedMediaIds));
+      const placeholders = uniqueMediaIds.map(() => "?").join(",");
+
       const [mediaRows]: any = await db.query(
-        `SELECT id, company_id, moderation_status, status, drop_id FROM drop_media WHERE id IN (?)`,
-        [requestedMediaIds]
+        `SELECT id, company_id, moderation_status, status, drop_id FROM drop_media WHERE id IN (${placeholders})`,
+        [...uniqueMediaIds]
       );
 
-      if (mediaRows.length !== requestedMediaIds.length) {
-        return res.status(400).json({ success: false, message: "One or more selected media items do not exist." });
+      const foundMap = new Map<number, any>();
+      if (Array.isArray(mediaRows)) {
+        for (const row of mediaRows) {
+          foundMap.set(Number(row.id), row);
+        }
       }
 
-      for (const m of mediaRows) {
-        if (m.company_id !== companyId) {
+      for (const id of uniqueMediaIds) {
+        const m = foundMap.get(id);
+        if (!m) {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} not found in drop_media database.`);
+          return res.status(400).json({ success: false, message: "One or more selected media items do not exist." });
+        }
+        if (Number(m.company_id) !== Number(companyId)) {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} belongs to company ${m.company_id}, expected ${companyId}.`);
           return res.status(403).json({ success: false, message: "Forbidden: Selected media item belongs to another company." });
         }
         if (m.moderation_status !== 'APPROVED') {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} moderation status is ${m.moderation_status}.`);
           return res.status(400).json({ success: false, message: "One or more selected media items have not passed safety moderation." });
         }
         if (m.status === 'DELETED') {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} status is DELETED.`);
           return res.status(400).json({ success: false, message: "One or more selected media items are deleted." });
         }
-        if (m.drop_id !== null && m.drop_id !== Number(dropId)) {
+        if (m.drop_id !== null && Number(m.drop_id) !== Number(dropId)) {
+          console.warn(`[DROP_MEDIA_VALIDATION] Media ID ${id} is already attached to another drop_id ${m.drop_id}.`);
           return res.status(400).json({ success: false, message: "One or more selected media items are already attached to another drop." });
         }
       }
@@ -2475,13 +2507,16 @@ const handleUpdateDrop = async (req: any, res: any) => {
       ]);
 
       if (requestedMediaIds.length > 0) {
-        await tx.query(`
-          UPDATE drop_media SET drop_id = NULL, status = 'UNLINKED' WHERE drop_id = ? AND id NOT IN (?) AND company_id = ?
-        `, [dropId, requestedMediaIds, companyId]);
+        const uniqueMediaIds = Array.from(new Set(requestedMediaIds));
+        const placeholders = uniqueMediaIds.map(() => "?").join(",");
 
         await tx.query(`
-          UPDATE drop_media SET drop_id = ?, status = 'APPROVED' WHERE id IN (?) AND company_id = ?
-        `, [dropId, requestedMediaIds, companyId]);
+          UPDATE drop_media SET drop_id = NULL, status = 'UNLINKED' WHERE drop_id = ? AND id NOT IN (${placeholders}) AND company_id = ?
+        `, [dropId, ...uniqueMediaIds, companyId]);
+
+        await tx.query(`
+          UPDATE drop_media SET drop_id = ?, status = 'APPROVED' WHERE id IN (${placeholders}) AND company_id = ?
+        `, [dropId, ...uniqueMediaIds, companyId]);
       } else {
         await tx.query(`
           UPDATE drop_media SET drop_id = NULL, status = 'UNLINKED' WHERE drop_id = ? AND company_id = ?
