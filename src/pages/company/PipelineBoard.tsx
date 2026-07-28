@@ -298,7 +298,13 @@ export function PipelineBoard() {
     await loadPipeline();
   };
 
-  const updateCandidateStage = async (appId: number, newStage: string, feedbackText?: string | null, bypassFeedback?: boolean) => {
+  const updateCandidateStage = async (
+    appId: number, 
+    newStage: string, 
+    feedbackText?: string | null, 
+    bypassFeedback?: boolean,
+    notifyCandidateVal?: boolean
+  ) => {
     if (selectedJobId === "ALL") {
       toast.error(
         "Select a specific job to advance candidates through its custom pipeline.",
@@ -358,6 +364,8 @@ export function PipelineBoard() {
 
       // Check if we need to show feedback confirmation popup first
       if (!bypassFeedback && (action === "REJECTED" || action === "SELECTED") && feedbackText === undefined) {
+        const curStageObj = activeStages.find((s) => s.id === (cand?.status || String(cand?.current_stage_id)));
+        const currentStageName = curStageObj ? curStageObj.label : "Applied";
         setFeedbackConfig({
           isOpen: true,
           appId,
@@ -365,6 +373,7 @@ export function PipelineBoard() {
           actionType: action as "SELECTED" | "REJECTED",
           candidateName: cand?.full_name || "Candidate",
           jobTitle: cand?.job_title || "Applied Position",
+          currentStageName,
         });
         return;
       }
@@ -372,6 +381,8 @@ export function PipelineBoard() {
       if (feedbackConfig) {
         setIsSubmittingFeedback(true);
       }
+
+      const shouldNotify = notifyCandidateVal !== undefined ? notifyCandidateVal : true;
 
       // Optimistic Update
       const targetStage = customStages.find((s: any) => Number(s.id) === numericStageId);
@@ -384,6 +395,8 @@ export function PipelineBoard() {
                 current_stage_id: numericStageId,
                 current_stage_type: action === "REJECTED" ? a.current_stage_type : (targetStage?.stage_type || a.current_stage_type),
                 current_stage_name: action === "REJECTED" ? a.current_stage_name : (targetStage?.stage_name || a.current_stage_name),
+                rejection_notification_status: action === "REJECTED" ? (shouldNotify ? "SENT" : "PENDING_MANUAL") : a.rejection_notification_status,
+                rejection_feedback: action === "REJECTED" ? (feedbackText || null) : a.rejection_feedback,
               }
             : a,
         ),
@@ -398,14 +411,16 @@ export function PipelineBoard() {
             ? "Application dropped/rejected"
             : "Moved to next stage via dynamic ATS Pipeline",
         feedback: feedbackText || null,
-        notifyCandidate: true,
+        notifyCandidate: shouldNotify,
       });
       toast.success(
         action === "REJECTED"
           ? "Application rejected"
           : "Stage updated successfully",
       );
-      markAsContacted(appId); // Mark contacted/notified on success!
+      if (shouldNotify) {
+        markAsContacted(appId);
+      }
       fetchData(); // Refresh pipeline immediately to keep data synced
       window.dispatchEvent(new CustomEvent('vega:pipeline-updated'));
     } catch (e) {
@@ -601,6 +616,7 @@ export function PipelineBoard() {
     actionType: "SELECTED" | "REJECTED";
     candidateName: string;
     jobTitle: string;
+    currentStageName?: string;
   } | null>(null);
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
   const [scheduleConfig, setScheduleConfig] = useState({
@@ -927,7 +943,10 @@ export function PipelineBoard() {
     if (selectedStageView === null) return [];
 
     // Begin with matching stage
-    let list = currentApplicants.filter((a) => a.status === selectedStageView);
+    let list =
+      selectedStageView === "REJECTED"
+        ? currentApplicants.filter(isRejectedCandidate)
+        : currentApplicants.filter((a) => a.status === selectedStageView);
 
     // Apply Rejected Phase filter
     if (selectedStageView === "REJECTED" && filterRejectedPhase !== "ALL") {
@@ -2575,9 +2594,16 @@ export function PipelineBoard() {
             onClose={() => setFeedbackConfig(null)}
             candidateName={feedbackConfig.candidateName}
             jobTitle={feedbackConfig.jobTitle}
+            currentStageName={feedbackConfig.currentStageName}
             actionType={feedbackConfig.actionType}
-            onConfirm={(feedbackText) => {
-              updateCandidateStage(feedbackConfig.appId, feedbackConfig.newStage, feedbackText, true);
+            onConfirm={(feedbackText, notifyCandidate) => {
+              updateCandidateStage(
+                feedbackConfig.appId,
+                feedbackConfig.newStage,
+                feedbackText,
+                true,
+                notifyCandidate
+              );
             }}
             isSubmitting={isSubmittingFeedback}
           />

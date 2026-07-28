@@ -55,6 +55,8 @@ function setupSQLite() {
     try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_feedback TEXT NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejected_at DATETIME NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejected_by_user_id INTEGER NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_notification_status VARCHAR(50) DEFAULT 'NOT_REQUIRED'"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_notified_at DATETIME NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT DEFAULT NULL"); } catch (e) {}
     try { sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key)"); } catch (e) {}
     console.log("📦 SQLite Database initialized (WAL mode & busy_timeout=10s active)");
@@ -917,6 +919,12 @@ export async function initDb() {
       } catch (e) {}
       try {
         await connection.query(`ALTER TABLE job_applications ADD COLUMN rejected_by_user_id INT NULL`);
+      } catch (e) {}
+      try {
+        await connection.query(`ALTER TABLE job_applications ADD COLUMN rejection_notification_status VARCHAR(50) DEFAULT 'NOT_REQUIRED'`);
+      } catch (e) {}
+      try {
+        await connection.query(`ALTER TABLE job_applications ADD COLUMN rejection_notified_at DATETIME NULL`);
       } catch (e) {}
       try {
         await connection.query(`ALTER TABLE notifications ADD COLUMN idempotency_key VARCHAR(191) DEFAULT NULL`);

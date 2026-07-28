@@ -436,6 +436,17 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 /**
+ * Helper to resolve company context from authenticated request
+ */
+async function resolveCompanyContext(req: any) {
+  const userId = req.user?.userId;
+  if (!userId) {
+    return { error: "User is not authenticated.", statusCode: 401, companyId: null, roleType: null, designation: null };
+  }
+  return await resolveCompanyAndCheckPermission(userId);
+}
+
+/**
  * RBAC Helper for Company User Authentication & Permissions
  * Queries company_hr_profiles joined with users to verify active user status.
  */
@@ -1379,23 +1390,52 @@ router.get("/applications/history/:appId", async (req, res) => {
 });
 
 // Update applicant stage
-router.post("/update-stage", async (req, res) => {
+router.post("/update-stage", authenticate, async (req: any, res) => {
   const { applicationId, stageId, action, notes, feedback, notifyCandidate } = req.body;
   try {
-    // Verify application
+    const ctx = await resolveCompanyContext(req);
+    if (ctx.error) {
+      return res.status(ctx.statusCode || 403).json({ success: false, message: ctx.error });
+    }
+
+    // Verify application and company ownership
     const [apps]: any = await db.query(`
-      SELECT JA.*, J.status as job_status, J.deadline as job_deadline
+      SELECT JA.*, J.company_id, J.title as job_title, J.status as job_status, J.deadline as job_deadline,
+             C.company_name, SP.user_id as student_user_id, SP.full_name, U.email
       FROM job_applications JA
       JOIN jobs J ON JA.job_id = J.id
-      WHERE JA.id = ?
-    `, [applicationId]);
-    if (apps.length === 0) return res.status(404).json({ success: false, message: "Application not found" });
+      LEFT JOIN company_profiles C ON J.company_id = C.id
+      JOIN student_profiles SP ON JA.student_id = SP.id
+      JOIN users U ON SP.user_id = U.id
+      WHERE JA.id = ? AND J.company_id = ?
+    `, [applicationId, ctx.companyId]);
+
+    if (!apps || apps.length === 0) {
+      return res.status(404).json({ success: false, message: "Application not found or unauthorized access." });
+    }
+
+    const app = apps[0];
+
+    // Sub HR assignment check
+    if (ctx.roleType === 'SUB_HR') {
+      const [jobAssigns]: any = await db.query(
+        "SELECT id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND job_id = ?",
+        [ctx.companyId, req.user.userId, app.job_id]
+      );
+      const [appAssigns]: any = await db.query(
+        "SELECT id FROM company_application_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND application_id = ?",
+        [ctx.companyId, req.user.userId, applicationId]
+      );
+      if (jobAssigns.length === 0 && appAssigns.length === 0) {
+        return res.status(403).json({ success: false, message: "Forbidden: You are not assigned to manage this job or application." });
+      }
+    }
 
     // Check if the pipeline/job has ended
-    const isJobClosed = apps[0].job_status === 'CLOSED';
+    const isJobClosed = app.job_status === 'CLOSED';
     let isDeadlinePassed = false;
-    if (apps[0].job_deadline) {
-      const dl = new Date(apps[0].job_deadline);
+    if (app.job_deadline) {
+      const dl = new Date(app.job_deadline);
       dl.setHours(23, 59, 59, 999);
       if (dl < new Date()) {
         isDeadlinePassed = true;
@@ -1405,33 +1445,124 @@ router.post("/update-stage", async (req, res) => {
     if (isJobClosed || isDeadlinePassed) {
       return res.status(400).json({ success: false, message: "This recruitment pipeline has ended. You cannot move candidates or perform stage updates on ended positions." });
     }
-    
-    let status = apps[0].status;
-    const userId = (req as any).user?.userId || req.body.userId || null;
+
+    const userId = req.user.userId;
+    const shouldNotify = notifyCandidate === undefined ? true : Boolean(notifyCandidate);
+
     if (action === 'REJECTED') {
-      status = 'REJECTED';
-      const rejStageId = stageId || apps[0].current_stage_id;
+      const rejStageId = stageId || app.current_stage_id;
       const cleanFeedback = (feedback !== undefined && feedback !== null) ? String(feedback).trim().slice(0, 1000) : null;
-      await db.query(`
+      const initialNotifStatus = shouldNotify ? 'PROCESSING' : 'PENDING_MANUAL';
+
+      // Current-state guard: update only if not already terminal
+      const [updateRes]: any = await db.query(`
         UPDATE job_applications 
-        SET status = 'REJECTED', rejection_stage_id = ?, rejection_feedback = ?, rejected_at = CURRENT_TIMESTAMP, rejected_by_user_id = ?
-        WHERE id = ?
-      `, [rejStageId, cleanFeedback, userId, applicationId]);
-    } else if (action === 'SELECTED') {
-      status = 'SELECTED';
-      await db.query(`
-        UPDATE job_applications 
-        SET current_stage_id = ?, status = ?
-        WHERE id = ?
-      `, [stageId, status, applicationId]);
-    } else {
-      status = 'IN_PROGRESS';
-      await db.query(`
-        UPDATE job_applications 
-        SET current_stage_id = ?, status = ?
-        WHERE id = ?
-      `, [stageId, status, applicationId]);
+        SET status = 'REJECTED', 
+            rejection_stage_id = ?, 
+            rejection_feedback = ?, 
+            rejected_at = CURRENT_TIMESTAMP, 
+            rejected_by_user_id = ?,
+            rejection_notification_status = ?
+        WHERE id = ? AND status NOT IN ('REJECTED', 'SELECTED', 'HIRED', 'WITHDRAWN')
+      `, [rejStageId, cleanFeedback, userId, initialNotifStatus, applicationId]);
+
+      if (!updateRes || updateRes.affectedRows === 0) {
+        return res.status(409).json({ success: false, message: "Application has already been rejected or terminal state updated." });
+      }
+
+      // Application History
+      await db.query("INSERT INTO application_history (application_id, stage_id, action, notes) VALUES (?, ?, ?, ?)", [
+        applicationId, rejStageId, 'REJECTED', cleanFeedback || 'Candidate rejected'
+      ]);
+
+      // Company Audit Record
+      try {
+        await db.query(`
+          INSERT INTO company_audit_logs (company_id, user_id, action_type, target_type, target_id, description)
+          VALUES (?, ?, 'REJECT_CANDIDATE', 'APPLICATION', ?, ?)
+        `, [ctx.companyId, userId, applicationId, `Rejected candidate for position ${app.job_title}`]);
+      } catch (e) {}
+
+      // Handle platform notification & email if auto notify is ON
+      if (shouldNotify) {
+        const title = "Application update: Not selected";
+        const message = cleanFeedback && cleanFeedback.length > 0
+          ? `HR feedback for your ${app.job_title} application: "${cleanFeedback}"`
+          : `Your application for ${app.job_title} has been rejected.`;
+        const idempotencyKey = `APPLICATION_REJECTED:${applicationId}`;
+
+        let notifSuccess = false;
+        try {
+          await db.query(
+            "INSERT INTO notifications (user_id, title, message, type, idempotency_key) VALUES (?, ?, ?, ?, ?)",
+            [app.student_user_id, title, message, 'REJECT', idempotencyKey]
+          );
+          notifSuccess = true;
+        } catch (e: any) {
+          if (e.message && (e.message.includes('UNIQUE') || e.message.includes('duplicate') || e.message.includes('1062'))) {
+            notifSuccess = true;
+          } else {
+            console.error("Platform notification insert error:", e.message);
+            notifSuccess = false;
+          }
+        }
+
+        if (notifSuccess) {
+          await db.query(`
+            UPDATE job_applications 
+            SET rejection_notification_status = 'SENT', rejection_notified_at = CURRENT_TIMESTAMP 
+            WHERE id = ?
+          `, [applicationId]);
+
+          if (app.email) {
+            const companyLabel = app.company_name || 'VEGA Partner';
+            const emailSubject = `Application Status Update: ${app.job_title} at ${companyLabel}`;
+            const emailHtml = `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+                <h2 style="color: #e53e3e; margin-bottom: 20px;">VEGA Application Status Update</h2>
+                <p>Hello ${app.full_name || 'Student'},</p>
+                <p>We regret to inform you that your application for the position of <strong>${app.job_title}</strong> at <strong>${companyLabel}</strong> has been updated to <strong>REJECTED</strong>.</p>
+                ${cleanFeedback ? `
+                <div style="background-color: #fffaf0; border-left: 4px solid #dd6b20; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                  <h4 style="margin: 0 0 10px 0; color: #dd6b20; font-size: 14px;">HR Feedback / Note:</h4>
+                  <p style="margin: 0; color: #4a5568; font-size: 14px; font-style: italic; white-space: pre-wrap;">"${cleanFeedback}"</p>
+                </div>
+                ` : ''}
+                <p>Thank you for your interest in ${companyLabel} and for taking the time to apply and participate in our process. We wish you the best of luck in your job search.</p>
+                <div style="margin: 30px 0; text-align: center;">
+                  <a href="${process.env.APP_URL || 'http://localhost:3000'}/login" style="background-color: #3182ce; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Go to Student Portal</a>
+                </div>
+                <p style="color: #718096; font-size: 12px; margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 15px;">
+                  This is an automated message from VEGA. Please do not reply to this email.
+                </p>
+              </div>
+            `;
+            sendEmail(app.email, emailSubject, emailHtml).catch(err => {
+              console.error("Async email sending failed:", err.message);
+            });
+          }
+        } else {
+          await db.query(`
+            UPDATE job_applications 
+            SET rejection_notification_status = 'FAILED' 
+            WHERE id = ?
+          `, [applicationId]);
+        }
+      }
+
+      return res.json({ success: true, message: "Application rejected successfully." });
     }
+
+    let status = 'IN_PROGRESS';
+    if (action === 'SELECTED') {
+      status = 'SELECTED';
+    }
+
+    await db.query(`
+      UPDATE job_applications 
+      SET current_stage_id = ?, status = ?
+      WHERE id = ?
+    `, [stageId, status, applicationId]);
 
     const historyNotes = feedback !== undefined && feedback !== null ? feedback : notes;
 
@@ -1439,66 +1570,182 @@ router.post("/update-stage", async (req, res) => {
       applicationId, stageId, action, historyNotes
     ]);
 
-    // Notify student
-    const [jobInfo]: any = await db.query(`
-      SELECT J.title, JS.stage_name, SP.user_id, SP.full_name, U.email, C.company_name, JA.job_id
+    // Stage update / shortlisting notification
+    const [stageInfo]: any = await db.query(`
+      SELECT JS.stage_name FROM job_stages JS WHERE JS.id = ?
+    `, [stageId]);
+    const stageName = stageInfo[0]?.stage_name || "Assessment/Next Phase";
+    let title = "Application Update";
+    let message = `Your application for ${app.job_title} has been moved to ${stageName}.`;
+    const hasFeedback = feedback && typeof feedback === 'string' && feedback.trim().length > 0;
+
+    if (status === 'SELECTED') {
+      title = "You have been shortlisted";
+      message = hasFeedback
+        ? `HR feedback for your ${app.job_title} application: "${feedback}"`
+        : `Your application for ${app.job_title} has been moved to Selected.`;
+    }
+
+    let notificationType = status === 'SELECTED' ? 'SUCCESS' : 'INFO';
+    const [testScheds]: any = await db.query("SELECT id FROM test_schedules WHERE job_id = ? AND stage_id = ?", [app.job_id || 0, stageId]);
+    if (testScheds.length > 0) {
+      title = "Action Required: Test Scheduled";
+      message = `Your application for "${app.job_title}" is now at stage "${stageName}". A test assessment is scheduled. Please go to Applied Jobs to complete it.`;
+      notificationType = 'WARNING';
+    }
+
+    try {
+      await db.query(
+        "INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)",
+        [app.student_user_id, title, message, notificationType]
+      );
+    } catch (e: any) {
+      console.warn("Notification insert note:", e.message);
+    }
+
+    if (app.email) {
+      let emailSubject = `Application Update: Moved to ${stageName}`;
+      let emailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+          <h2 style="color: #2b6cb0; margin-bottom: 20px;">VEGA Application Update</h2>
+          <p>Hello ${app.full_name || 'Student'},</p>
+          <p>Your application for the position of <strong>${app.job_title}</strong> has been updated.</p>
+          <p>Current Stage: <strong>${stageName}</strong></p>
+          <p>Please log in to the VEGA student portal to check your updated status.</p>
+        </div>
+      `;
+
+      if (status === 'SELECTED') {
+        const companyLabel = app.company_name || 'VEGA Partner';
+        emailSubject = `Congratulations! Selected for ${app.job_title} at ${companyLabel}`;
+        emailHtml = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <h2 style="color: #38a169; margin-bottom: 20px;">Congratulations!</h2>
+            <p>Hello ${app.full_name || 'Student'},</p>
+            <p>We are thrilled to inform you that you have been <strong>SELECTED / SHORTLISTED</strong> for the position of <strong>${app.job_title}</strong> at <strong>${companyLabel}</strong>!</p>
+            ${hasFeedback ? `
+            <div style="background-color: #f0fff4; border-left: 4px solid #38a169; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <h4 style="margin: 0 0 10px 0; color: #276749; font-size: 14px;">HR Feedback / Note:</h4>
+              <p style="margin: 0; color: #2f855a; font-size: 14px; font-style: italic; white-space: pre-wrap;">"${feedback}"</p>
+            </div>
+            ` : ''}
+            <p>Our team will reach out to you shortly with details regarding onboarding.</p>
+          </div>
+        `;
+      }
+
+      sendEmail(app.email, emailSubject, emailHtml).catch(err => {
+        console.error("Async email sending failed:", err.message);
+      });
+    }
+
+    res.json({ success: true, message: "Stage updated successfully." });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Failed to update stage" });
+  }
+});
+
+// Send manual rejection notification for a rejected application
+const handleManualRejectionNotify = async (req: any, res: any) => {
+  const { applicationId } = req.params;
+  try {
+    const ctx = await resolveCompanyContext(req);
+    if (ctx.error) {
+      return res.status(ctx.statusCode || 403).json({ success: false, message: ctx.error });
+    }
+
+    const [apps]: any = await db.query(`
+      SELECT JA.*, J.title as job_title, C.company_name, SP.user_id as student_user_id, SP.full_name, U.email
       FROM job_applications JA
       JOIN jobs J ON JA.job_id = J.id
       LEFT JOIN company_profiles C ON J.company_id = C.id
-      LEFT JOIN job_stages JS ON JA.current_stage_id = JS.id
       JOIN student_profiles SP ON JA.student_id = SP.id
       JOIN users U ON SP.user_id = U.id
-      WHERE JA.id = ?
+      WHERE JA.id = ? AND J.company_id = ?
+    `, [applicationId, ctx.companyId]);
+
+    if (!apps || apps.length === 0) {
+      return res.status(404).json({ success: false, message: "Rejected application not found for this company." });
+    }
+
+    const app = apps[0];
+
+    // Sub HR assignment check
+    if (ctx.roleType === 'SUB_HR') {
+      const [jobAssigns]: any = await db.query(
+        "SELECT id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND job_id = ?",
+        [ctx.companyId, req.user.userId, app.job_id]
+      );
+      const [appAssigns]: any = await db.query(
+        "SELECT id FROM company_application_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND application_id = ?",
+        [ctx.companyId, req.user.userId, applicationId]
+      );
+      if (jobAssigns.length === 0 && appAssigns.length === 0) {
+        return res.status(403).json({ success: false, message: "Forbidden: You are not assigned to manage this job or application." });
+      }
+    }
+
+    if (app.status !== 'REJECTED') {
+      return res.status(400).json({ success: false, message: "Application is not in REJECTED status." });
+    }
+
+    if (app.rejection_notification_status === 'SENT') {
+      return res.status(400).json({ success: false, message: "Candidate has already been notified of rejection." });
+    }
+
+    // Atomic transition to PROCESSING
+    const [updateResult]: any = await db.query(`
+      UPDATE job_applications 
+      SET rejection_notification_status = 'PROCESSING'
+      WHERE id = ? AND status = 'REJECTED' AND rejection_notification_status IN ('PENDING_MANUAL', 'FAILED', 'NOT_REQUIRED', '')
     `, [applicationId]);
 
-    if (jobInfo.length > 0) {
-      const info = jobInfo[0];
-      const stageName = info.stage_name || "Assessment/Next Phase";
-      let title = "Application Update";
-      let message = `Your application for ${info.title} has been moved to ${stageName}.`;
-      
-      const hasFeedback = feedback && typeof feedback === 'string' && feedback.trim().length > 0;
+    if (!updateResult || updateResult.affectedRows === 0) {
+      return res.status(409).json({ success: false, message: "Notification is currently processing or already sent." });
+    }
 
-      if (action === 'REJECTED') {
-        title = "Application update: Not selected";
-        if (hasFeedback) {
-          message = `HR feedback for your ${info.title} application: "${feedback}"`;
-        } else {
-          message = `Your application for ${info.title} has been rejected.`;
-        }
-      } else if (status === 'SELECTED') {
-        title = "You have been shortlisted";
-        if (hasFeedback) {
-          message = `HR feedback for your ${info.title} application: "${feedback}"`;
-        } else {
-          message = `Your application for ${info.title} has been moved to Selected.`;
-        }
+    const customMsg = req.body?.message || app.rejection_feedback;
+    const hasFeedback = customMsg && String(customMsg).trim().length > 0;
+    const title = "Application update: Not selected";
+    const message = hasFeedback
+      ? `HR feedback for your ${app.job_title} application: "${customMsg}"`
+      : `Your application for ${app.job_title} has been rejected.`;
+
+    const idempotencyKey = `APPLICATION_REJECTED:${applicationId}`;
+
+    let notifCreated = false;
+    try {
+      await db.query(
+        "INSERT INTO notifications (user_id, title, message, type, idempotency_key) VALUES (?, ?, ?, ?, ?)",
+        [app.student_user_id, title, message, 'REJECT', idempotencyKey]
+      );
+      notifCreated = true;
+    } catch (e: any) {
+      if (e.message && (e.message.includes('UNIQUE') || e.message.includes('duplicate') || e.message.includes('1062'))) {
+        notifCreated = true;
+      } else {
+        console.warn("Notification insert warning:", e.message);
+        notifCreated = false;
       }
+    }
 
-      let notificationType = action === 'REJECTED' ? 'REJECT' : status === 'SELECTED' ? 'SUCCESS' : 'INFO';
-
-      // Check if there is a scheduled test for this stage
-      const [testScheds]: any = await db.query("SELECT id FROM test_schedules WHERE job_id = ? AND stage_id = ?", [info.job_id || 0, stageId]);
-      if (testScheds.length > 0) {
-        title = "Action Required: Test Scheduled";
-        message = `Your application for "${info.title}" is now at stage "${stageName}". A test assessment is scheduled. Please go to Applied Jobs to complete it.`;
-        notificationType = 'WARNING';
-      }
-
-      await db.query("INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)", [
-        info.user_id, title, message, notificationType
-      ]);
-
-      // Send email to student asynchronously
-      if (info.email) {
-        let emailSubject = `Application Update: Moved to ${stageName}`;
-        let emailHtml = `
+    if (notifCreated) {
+      if (app.email) {
+        const companyLabel = app.company_name || 'VEGA Partner';
+        const emailSubject = `Application Status Update: ${app.job_title} at ${companyLabel}`;
+        const emailHtml = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-            <h2 style="color: #2b6cb0; margin-bottom: 20px;">VEGA Application Update</h2>
-            <p>Hello ${info.full_name || 'Student'},</p>
-            <p>Your application for the position of <strong>${info.title}</strong> has been updated.</p>
-            <p>Current Stage: <strong>${stageName}</strong></p>
-            <p>Please log in to the VEGA student portal to check your updated status and see if there are any pending assessments or interview schedules.</p>
+            <h2 style="color: #e53e3e; margin-bottom: 20px;">VEGA Application Status Update</h2>
+            <p>Hello ${app.full_name || 'Student'},</p>
+            <p>We regret to inform you that your application for the position of <strong>${app.job_title}</strong> at <strong>${companyLabel}</strong> has been updated to <strong>REJECTED</strong>.</p>
+            ${hasFeedback ? `
+            <div style="background-color: #fffaf0; border-left: 4px solid #dd6b20; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <h4 style="margin: 0 0 10px 0; color: #dd6b20; font-size: 14px;">HR Feedback / Note:</h4>
+              <p style="margin: 0; color: #4a5568; font-size: 14px; font-style: italic; white-space: pre-wrap;">"${customMsg}"</p>
+            </div>
+            ` : ''}
+            <p>Thank you for your interest in ${companyLabel} and for taking the time to apply and participate in our process. We wish you the best of luck in your job search.</p>
             <div style="margin: 30px 0; text-align: center;">
               <a href="${process.env.APP_URL || 'http://localhost:3000'}/login" style="background-color: #3182ce; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Go to Student Portal</a>
             </div>
@@ -1508,66 +1755,40 @@ router.post("/update-stage", async (req, res) => {
           </div>
         `;
 
-        const companyLabel = info.company_name || 'VEGA Partner';
-
-        if (action === 'REJECTED') {
-          emailSubject = `Application Status Update: ${info.title} at ${companyLabel}`;
-          emailHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-              <h2 style="color: #e53e3e; margin-bottom: 20px;">VEGA Application Status Update</h2>
-              <p>Hello ${info.full_name || 'Student'},</p>
-              <p>We regret to inform you that your application for the position of <strong>${info.title}</strong> at <strong>${companyLabel}</strong> has been updated to <strong>REJECTED</strong>.</p>
-              ${hasFeedback ? `
-              <div style="background-color: #fffaf0; border-left: 4px solid #dd6b20; padding: 15px; margin: 20px 0; border-radius: 4px;">
-                <h4 style="margin: 0 0 10px 0; color: #dd6b20; font-size: 14px;">HR Feedback / Note:</h4>
-                <p style="margin: 0; color: #4a5568; font-size: 14px; font-style: italic; white-space: pre-wrap;">"${feedback}"</p>
-              </div>
-              ` : ''}
-              <p>Thank you for your interest in ${companyLabel} and for taking the time to apply and participate in our process. We wish you the best of luck in your job search.</p>
-              <div style="margin: 30px 0; text-align: center;">
-                <a href="${process.env.APP_URL || 'http://localhost:3000'}/login" style="background-color: #3182ce; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Go to Student Portal</a>
-              </div>
-              <p style="color: #718096; font-size: 12px; margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 15px;">
-                This is an automated message from VEGA. Please do not reply to this email.
-              </p>
-            </div>
-          `;
-        } else if (status === 'SELECTED') {
-          emailSubject = `Congratulations! Selected for ${info.title} at ${companyLabel}`;
-          emailHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-              <h2 style="color: #38a169; margin-bottom: 20px;">Congratulations!</h2>
-              <p>Hello ${info.full_name || 'Student'},</p>
-              <p>We are thrilled to inform you that you have been <strong>SELECTED / SHORTLISTED</strong> for the position of <strong>${info.title}</strong> at <strong>${companyLabel}</strong>!</p>
-              ${hasFeedback ? `
-              <div style="background-color: #f0fff4; border-left: 4px solid #38a169; padding: 15px; margin: 20px 0; border-radius: 4px;">
-                <h4 style="margin: 0 0 10px 0; color: #276749; font-size: 14px;">HR Feedback / Note:</h4>
-                <p style="margin: 0; color: #2f855a; font-size: 14px; font-style: italic; white-space: pre-wrap;">"${feedback}"</p>
-              </div>
-              ` : ''}
-              <p>Our team will reach out to you shortly with details regarding onboarding, documentation, and the final steps. In the meantime, you can review your application history in the portal.</p>
-              <div style="margin: 30px 0; text-align: center;">
-                <a href="${process.env.APP_URL || 'http://localhost:3000'}/login" style="background-color: #38a169; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Go to Student Portal</a>
-              </div>
-              <p style="color: #718096; font-size: 12px; margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 15px;">
-                This is an automated message from VEGA. Please do not reply to this email.
-              </p>
-            </div>
-          `;
-        }
-
-        sendEmail(info.email, emailSubject, emailHtml).catch(err => {
+        sendEmail(app.email, emailSubject, emailHtml).catch(err => {
           console.error("Async email sending failed:", err.message);
         });
       }
-    }
 
-    res.json({ success: true, message: "Stage updated" });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Failed to update stage" });
+      await db.query(`
+        UPDATE job_applications 
+        SET rejection_notification_status = 'SENT', rejection_notified_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [applicationId]);
+
+      return res.json({ success: true, message: "Candidate notified successfully!" });
+    } else {
+      await db.query(`
+        UPDATE job_applications 
+        SET rejection_notification_status = 'FAILED'
+        WHERE id = ?
+      `, [applicationId]);
+
+      return res.status(500).json({ success: false, message: "Failed to create platform notification." });
+    }
+  } catch (err: any) {
+    console.error("Manual rejection notification error:", err);
+    await db.query(`
+      UPDATE job_applications 
+      SET rejection_notification_status = 'FAILED'
+      WHERE id = ?
+    `, [applicationId]).catch(() => {});
+    res.status(500).json({ success: false, message: "Failed to send rejection notification." });
   }
-});
+};
+
+router.post("/applications/:applicationId/send-rejection-notification", authenticate, handleManualRejectionNotify);
+router.post("/company/applications/:applicationId/notify-decision", authenticate, handleManualRejectionNotify);
 
 // Get full student details for an application
 router.get("/student-full-details/:studentId", async (req, res) => {

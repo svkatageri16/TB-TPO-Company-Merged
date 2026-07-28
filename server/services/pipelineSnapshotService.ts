@@ -196,6 +196,8 @@ export async function getPipelineSnapshot(
       a.rejection_stage_id,
       a.rejection_feedback,
       a.rejected_at,
+      a.rejection_notification_status,
+      a.rejection_notified_at,
       a.applied_at,
       j.title as job_title,
       j.status as job_status,
