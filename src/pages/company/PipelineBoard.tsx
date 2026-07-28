@@ -512,10 +512,20 @@ export function PipelineBoard() {
   const currentApplicants = useMemo(() => {
     let list = allApplicants;
 
+    const isJobActiveLocal = (j: any) => {
+      if (j.status === 'CLOSED' || j.ended_at || j.pipeline_ended_at) return false;
+      if (j.deadline) {
+        const dl = new Date(j.deadline).getTime();
+        if (!isNaN(dl) && dl < Date.now()) return false;
+      }
+      return j.status === 'OPEN';
+    };
+
     const filteredJobIds = jobs
       .filter((j: any) => {
-        if (pipelineFilter === 'active') return j.status === 'OPEN';
-        if (pipelineFilter === 'inactive') return j.status === 'CLOSED';
+        const active = isJobActiveLocal(j);
+        if (pipelineFilter === 'active') return active;
+        if (pipelineFilter === 'inactive') return !active;
         return true;
       })
       .map((j: any) => j.id.toString());
@@ -1308,11 +1318,7 @@ export function PipelineBoard() {
                 const stageConf = getStageConfig(stage);
                 const IconComp = stageConf?.icon || HelpCircle;
                 const stageApps = currentApplicants.filter(
-                  (a) => {
-                    if (a.status !== stage.id) return false;
-                    const job = jobs.find((j: any) => j.id.toString() === a.job_id?.toString());
-                    return job ? job.status === 'OPEN' : true;
-                  }
+                  (a) => a.status === stage.id
                 );
 
                 // Average talent score
@@ -2705,7 +2711,7 @@ function PipelineHeader({
         />
         <KPICard
           title="In Interview"
-          value={applicants.filter((a: any) => a.status === "INTERVIEW").length}
+          value={applicants.filter((a: any) => a.status === "INTERVIEW" || a.status === "HR").length}
           icon={Calendar}
           color="orange"
         />

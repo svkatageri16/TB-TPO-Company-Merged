@@ -2,6 +2,7 @@ import express from "express";
 import db from "../db.ts";
 import { logProfileView, updateDailyTask, calculateTalentScore, updateLoginStreak } from "../services/analyticsService.ts";
 import { authenticate } from "../middleware/auth.ts";
+import { getPipelineSnapshot, mapStageToCanonicalKey } from "../services/pipelineSnapshotService.ts";
 
 const router = express.Router();
 
@@ -376,6 +377,48 @@ const getHiringTimeData = async (companyId: any, isSubHr: boolean, assignedJobId
     jobWise
   };
 };
+
+// Canonical Pipeline Snapshot Endpoint
+router.get("/pipeline/snapshot", authenticate, async (req: any, res) => {
+  try {
+    const userId = req.user.userId;
+    let companyId = req.query.companyId ? Number(req.query.companyId) : null;
+
+    if (!companyId) {
+      const [hrProfiles]: any = await db.query("SELECT company_id FROM company_hr_profiles WHERE user_id = ?", [userId]);
+      if (hrProfiles && hrProfiles.length > 0) {
+        companyId = Number(hrProfiles[0].company_id);
+      } else {
+        const [company]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [userId]);
+        if (company && company.length > 0) {
+          companyId = Number(company[0].id);
+        }
+      }
+    }
+
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: "Company profile not found" });
+    }
+
+    const scope = (req.query.scope as "all" | "active" | "ended") || "all";
+    const jobId = req.query.jobId && req.query.jobId !== "ALL" && req.query.jobId !== "all" ? Number(req.query.jobId) : undefined;
+    const searchQuery = req.query.searchQuery ? String(req.query.searchQuery) : undefined;
+    const minScore = req.query.minScore ? Number(req.query.minScore) : undefined;
+
+    const snapshot = await getPipelineSnapshot(companyId, {
+      scope,
+      jobId,
+      userId,
+      searchQuery,
+      minScore,
+    });
+
+    res.json({ success: true, data: snapshot });
+  } catch (error: any) {
+    console.error("Error generating pipeline snapshot:", error);
+    res.status(500).json({ success: false, message: "Error generating pipeline snapshot", error: String(error) });
+  }
+});
 
 // GET Employer Analytics & Candidates
 router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {

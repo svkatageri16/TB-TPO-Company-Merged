@@ -10,8 +10,32 @@ export interface PipelineSnapshotBucket {
 }
 
 export interface PipelineSnapshot {
-  scope: "all" | "active" | "ended" | "job";
-  jobId?: number;
+  scope: {
+    jobStatus: "all" | "active" | "ended";
+    jobId: number | null;
+  };
+  summary: {
+    totalApplicants: number;
+    shortlisted: number;
+    inInterview: number;
+    inPipeline: number;
+    selected: number;
+    rejected: number;
+  };
+  stages: {
+    applied: { count: number; candidates: any[] };
+    aiScreening: { count: number; candidates: any[] };
+    assessment: { count: number; candidates: any[] };
+    technicalInterview: { count: number; candidates: any[] };
+    hrInterview: { count: number; candidates: any[] };
+    selected: { count: number; candidates: any[] };
+    rejected: { count: number; candidates: any[] };
+  };
+  reconciliation: {
+    bucketTotal: number;
+    missingApplicationIds: number[];
+    duplicateApplicationIds: number[];
+  };
   companyId: number;
   totalApplicants: number;
   buckets: {
@@ -27,21 +51,86 @@ export interface PipelineSnapshot {
 }
 
 /**
- * Normalizes stage types to canonical bucket keys:
- * - 'APPLICATION' -> 'applied'
- * - 'SCREENING' -> 'screening'
- * - 'TEST' -> 'assessment'
- * - 'INTERVIEW' -> 'interview'
- * - 'HR' -> 'hr'
+ * Precedence-based Canonical Stage Bucket Resolver:
+ * 1. Terminal Application Status (REJECTED, CANCELLED, WITHDRAWN -> 'rejected', SELECTED, HIRED, OFFER_ACCEPTED, SHORTLISTED -> 'selected')
+ * 2. Joined Current Stage Type / Name (APPLICATION/APPLIED -> 'applied', SCREENING -> 'aiScreening', TEST/ASSESSMENT -> 'assessment', INTERVIEW -> 'technicalInterview', HR -> 'hrInterview')
+ * 3. Fallback -> 'applied'
  */
-export function mapStageTypeToBucket(stageType?: string | null): string {
-  if (!stageType) return "applied";
-  const upper = stageType.toUpperCase();
-  if (upper === "SCREENING") return "screening";
-  if (upper === "TEST" || upper === "ASSESSMENT") return "assessment";
-  if (upper === "INTERVIEW") return "interview";
-  if (upper === "HR") return "hr";
-  return "applied";
+export function mapStageToCanonicalKey(app: any): {
+  key: "applied" | "aiScreening" | "assessment" | "technicalInterview" | "hrInterview" | "selected" | "rejected";
+  legacyKey: "applied" | "screening" | "assessment" | "interview" | "hr" | "selected" | "rejected";
+} {
+  const statusUpper = String(app.status || app.app_status || "").toUpperCase();
+  const stageTypeUpper = String(app.current_stage_type || app.stage_type || "").toUpperCase();
+  const stageNameUpper = String(app.current_stage_name || app.stage_name || "").toUpperCase();
+
+  // 1. Terminal Status
+  if (statusUpper === "REJECTED" || statusUpper === "CANCELLED" || statusUpper === "WITHDRAWN") {
+    return { key: "rejected", legacyKey: "rejected" };
+  }
+  if (
+    statusUpper === "SELECTED" ||
+    statusUpper === "HIRED" ||
+    statusUpper === "OFFER_ACCEPTED" ||
+    statusUpper === "VERIFIED_SELECTION" ||
+    statusUpper === "SHORTLISTED"
+  ) {
+    return { key: "selected", legacyKey: "selected" };
+  }
+
+  // 2. Current Stage Type / Name
+  if (stageTypeUpper) {
+    if (stageTypeUpper === "APPLICATION" || stageTypeUpper === "APPLIED" || stageTypeUpper === "RESUME_REVIEW") {
+      return { key: "applied", legacyKey: "applied" };
+    }
+    if (stageTypeUpper === "SCREENING" || stageTypeUpper === "AI_SCREENING" || stageTypeUpper === "RESUME_SCREENING") {
+      return { key: "aiScreening", legacyKey: "screening" };
+    }
+    if (stageTypeUpper === "TEST" || stageTypeUpper === "ASSESSMENT" || stageTypeUpper === "SKILL_ASSESSMENT" || stageTypeUpper === "TEST_STAGE") {
+      return { key: "assessment", legacyKey: "assessment" };
+    }
+    if (stageTypeUpper === "HR" || stageTypeUpper === "HR_INTERVIEW") {
+      return { key: "hrInterview", legacyKey: "hr" };
+    }
+    if (stageTypeUpper === "INTERVIEW" || stageTypeUpper === "INTERVIEW_ONLINE" || stageTypeUpper === "TECHNICAL_INTERVIEW") {
+      if (stageNameUpper.includes("HR")) {
+        return { key: "hrInterview", legacyKey: "hr" };
+      }
+      return { key: "technicalInterview", legacyKey: "interview" };
+    }
+    if (stageTypeUpper === "SELECTED" || stageTypeUpper === "HIRED" || stageTypeUpper === "OFFER") {
+      return { key: "selected", legacyKey: "selected" };
+    }
+  }
+
+  if (stageNameUpper) {
+    if (stageNameUpper.includes("APPLICATION") || stageNameUpper.includes("APPLIED")) {
+      return { key: "applied", legacyKey: "applied" };
+    }
+    if (stageNameUpper.includes("SCREEN") || stageNameUpper.includes("AI")) {
+      return { key: "aiScreening", legacyKey: "screening" };
+    }
+    if (stageNameUpper.includes("TEST") || stageNameUpper.includes("ASSESS")) {
+      return { key: "assessment", legacyKey: "assessment" };
+    }
+    if (stageNameUpper.includes("HR") && stageNameUpper.includes("INTERVIEW")) {
+      return { key: "hrInterview", legacyKey: "hr" };
+    }
+    if (stageNameUpper.includes("INTERVIEW") || stageNameUpper.includes("TECH")) {
+      return { key: "technicalInterview", legacyKey: "interview" };
+    }
+    if (stageNameUpper.includes("SELECT") || stageNameUpper.includes("SHORTLIST") || stageNameUpper.includes("HIRE") || stageNameUpper.includes("OFFER")) {
+      return { key: "selected", legacyKey: "selected" };
+    }
+  }
+
+  // 3. Status string fallback
+  if (statusUpper === "IN_PROGRESS") {
+    return { key: "aiScreening", legacyKey: "screening" };
+  }
+
+  // 4. Fallback to applied
+  return { key: "applied", legacyKey: "applied" };
 }
 
 /**
@@ -51,12 +140,51 @@ export function mapStageTypeToBucket(stageType?: string | null): string {
  */
 export async function getPipelineSnapshot(
   companyId: number,
-  options?: { scope?: "all" | "active" | "ended"; jobId?: number }
+  options?: {
+    scope?: "all" | "active" | "ended";
+    jobId?: number;
+    userId?: number;
+    searchQuery?: string;
+    minScore?: number;
+  }
 ): Promise<PipelineSnapshot> {
-  const scope = options?.jobId ? "job" : options?.scope || "all";
-  const targetJobId = options?.jobId;
+  const scopeVal: "all" | "active" | "ended" = options?.scope || "all";
+  const targetJobId = options?.jobId ? Number(options.jobId) : null;
+  const userId = options?.userId ? Number(options.userId) : null;
 
-  // 1. Query applications joined with jobs and current job_stages
+  // 1. Check Sub HR scoping if userId is provided
+  let assignedJobIds: number[] | null = null;
+  let assignedAppIds: number[] | null = null;
+
+  if (userId) {
+    const [hrProfiles]: any = await db.query(
+      "SELECT company_id FROM company_hr_profiles WHERE user_id = ?",
+      [userId]
+    );
+    if (hrProfiles && hrProfiles.length > 0) {
+      const [assignments]: any = await db.query(
+        "SELECT application_id, job_id FROM company_application_assignments WHERE company_id = ? AND assigned_hr_user_id = ?",
+        [companyId, userId]
+      );
+      const [jobAssignments]: any = await db.query(
+        "SELECT job_id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ?",
+        [companyId, userId]
+      );
+
+      const allJobIds = new Set<number>();
+      if (assignments) assignments.forEach((a: any) => allJobIds.add(Number(a.job_id)));
+      if (jobAssignments) jobAssignments.forEach((a: any) => allJobIds.add(Number(a.job_id)));
+
+      if (allJobIds.size > 0) {
+        assignedJobIds = Array.from(allJobIds);
+      }
+      if (assignments && assignments.length > 0) {
+        assignedAppIds = assignments.map((a: any) => Number(a.application_id));
+      }
+    }
+  }
+
+  // 2. Query applications joined with jobs, stages, student profile, user, scores
   let sql = `
     SELECT 
       a.id as application_id,
@@ -64,6 +192,7 @@ export async function getPipelineSnapshot(
       a.student_id,
       a.current_stage_id,
       a.status as app_status,
+      a.status,
       a.rejection_stage_id,
       a.rejection_feedback,
       a.rejected_at,
@@ -76,13 +205,21 @@ export async function getPipelineSnapshot(
       js.stage_name as current_stage_name,
       js.stage_type as current_stage_type,
       js.stage_order as current_stage_order,
+      sp.full_name,
       sp.full_name as student_name,
-      u.email as student_email
+      sp.skills_json,
+      sp.resume_url,
+      u.email,
+      u.email as student_email,
+      ts.overall_score as talent_score,
+      sps.avg_interview_score
     FROM job_applications a
     JOIN jobs j ON a.job_id = j.id
     LEFT JOIN job_stages js ON a.current_stage_id = js.id
     LEFT JOIN student_profiles sp ON a.student_id = sp.id
     LEFT JOIN users u ON sp.user_id = u.id
+    LEFT JOIN talent_scores ts ON u.id = ts.user_id
+    LEFT JOIN student_performance_stats sps ON u.id = sps.user_id
     WHERE j.company_id = ?
   `;
 
@@ -93,25 +230,61 @@ export async function getPipelineSnapshot(
     params.push(targetJobId);
   }
 
+  sql += ` ORDER BY a.applied_at DESC`;
+
   const [rows]: any = await db.query(sql, params);
   const rawApps = rows || [];
 
-  // 2. Filter by lifecycle scope
+  // 3. Filter by Sub HR assignments, lifecycle scope, search query, minScore
   const filteredApps = rawApps.filter((a: any) => {
-    if (targetJobId) return true;
-    const active = isJobActive({
-      status: a.job_status,
-      deadline: a.deadline,
-      ended_at: a.ended_at,
-      pipeline_ended_at: a.pipeline_ended_at,
-    });
-    if (scope === "active") return active;
-    if (scope === "ended") return !active;
-    return true; // 'all'
+    // Sub HR scoping
+    if (assignedJobIds !== null || assignedAppIds !== null) {
+      const jobAllowed = assignedJobIds?.includes(Number(a.job_id));
+      const appAllowed = assignedAppIds?.includes(Number(a.application_id));
+      if (!jobAllowed && !appAllowed) return false;
+    }
+
+    // Lifecycle Scope filtering
+    if (!targetJobId) {
+      const active = isJobActive({
+        status: a.job_status,
+        deadline: a.deadline,
+        ended_at: a.ended_at,
+        pipeline_ended_at: a.pipeline_ended_at,
+      });
+      if (scopeVal === "active" && !active) return false;
+      if (scopeVal === "ended" && active) return false;
+    }
+
+    // Search query filter
+    if (options?.searchQuery) {
+      const q = options.searchQuery.toLowerCase();
+      const matchName = (a.full_name || a.student_name || "").toLowerCase().includes(q);
+      const matchJob = (a.job_title || "").toLowerCase().includes(q);
+      const matchEmail = (a.email || a.student_email || "").toLowerCase().includes(q);
+      if (!matchName && !matchJob && !matchEmail) return false;
+    }
+
+    // Minimum match score filter
+    if (options?.minScore && options.minScore > 0) {
+      if ((a.talent_score || 0) < options.minScore) return false;
+    }
+
+    return true;
   });
 
-  // 3. Initialize canonical buckets
-  const buckets = {
+  // 4. Initialize stage buckets
+  const stages = {
+    applied: { count: 0, candidates: [] as any[] },
+    aiScreening: { count: 0, candidates: [] as any[] },
+    assessment: { count: 0, candidates: [] as any[] },
+    technicalInterview: { count: 0, candidates: [] as any[] },
+    hrInterview: { count: 0, candidates: [] as any[] },
+    selected: { count: 0, candidates: [] as any[] },
+    rejected: { count: 0, candidates: [] as any[] },
+  };
+
+  const legacyBuckets = {
     applied: 0,
     screening: 0,
     assessment: 0,
@@ -121,7 +294,7 @@ export async function getPipelineSnapshot(
     rejected: 0,
   };
 
-  const bucketApps: Record<string, any[]> = {
+  const legacyBucketApps: Record<string, any[]> = {
     applied: [],
     screening: [],
     assessment: [],
@@ -131,29 +304,58 @@ export async function getPipelineSnapshot(
     rejected: [],
   };
 
-  // 4. Assign each application to EXACTLY ONE bucket
+  const seenAppIds = new Set<number>();
+  const duplicateAppIds: number[] = [];
+
+  // 5. Bucket assignment - EXACTLY ONE bucket per application
   for (const app of filteredApps) {
-    let bucketKey = "applied";
-    const statusUpper = (app.app_status || "").toUpperCase();
-
-    if (statusUpper === "REJECTED") {
-      bucketKey = "rejected";
-    } else if (statusUpper === "SELECTED" || statusUpper === "HIRED") {
-      bucketKey = "selected";
-    } else {
-      bucketKey = mapStageTypeToBucket(app.current_stage_type);
+    const appId = Number(app.application_id);
+    if (seenAppIds.has(appId)) {
+      duplicateAppIds.push(appId);
+      continue;
     }
+    seenAppIds.add(appId);
 
-    if (buckets[bucketKey as keyof typeof buckets] !== undefined) {
-      buckets[bucketKey as keyof typeof buckets]++;
-      bucketApps[bucketKey].push(app);
-    } else {
-      buckets.applied++;
-      bucketApps.applied.push(app);
-    }
+    const { key, legacyKey } = mapStageToCanonicalKey(app);
+
+    stages[key].count++;
+    stages[key].candidates.push(app);
+
+    legacyBuckets[legacyKey]++;
+    legacyBucketApps[legacyKey].push(app);
   }
 
   const totalApplicants = filteredApps.length;
+
+  // Invariant verification
+  const bucketTotal =
+    stages.applied.count +
+    stages.aiScreening.count +
+    stages.assessment.count +
+    stages.technicalInterview.count +
+    stages.hrInterview.count +
+    stages.selected.count +
+    stages.rejected.count;
+
+  if (bucketTotal !== totalApplicants) {
+    console.warn(
+      `[PipelineSnapshot Invariant Warning] bucketTotal (${bucketTotal}) !== totalApplicants (${totalApplicants}) for companyId=${companyId}`
+    );
+  }
+
+  const summary = {
+    totalApplicants,
+    shortlisted: stages.selected.count,
+    inInterview: stages.technicalInterview.count + stages.hrInterview.count,
+    inPipeline:
+      stages.applied.count +
+      stages.aiScreening.count +
+      stages.assessment.count +
+      stages.technicalInterview.count +
+      stages.hrInterview.count,
+    selected: stages.selected.count,
+    rejected: stages.rejected.count,
+  };
 
   const bucketLabels: Record<string, string> = {
     applied: "Applied",
@@ -165,23 +367,32 @@ export async function getPipelineSnapshot(
     rejected: "Rejected",
   };
 
-  const bucketDetails: PipelineSnapshotBucket[] = Object.keys(buckets).map((key) => {
-    const count = buckets[key as keyof typeof buckets];
+  const bucketDetails: PipelineSnapshotBucket[] = Object.keys(legacyBuckets).map((key) => {
+    const count = legacyBuckets[key as keyof typeof legacyBuckets];
     return {
       bucketKey: key,
       bucketLabel: bucketLabels[key] || key,
       count,
       percentage: totalApplicants > 0 ? Math.round((count / totalApplicants) * 100) : 0,
-      applications: bucketApps[key],
+      applications: legacyBucketApps[key],
     };
   });
 
   return {
-    scope,
-    jobId: targetJobId,
+    scope: {
+      jobStatus: scopeVal,
+      jobId: targetJobId,
+    },
+    summary,
+    stages,
+    reconciliation: {
+      bucketTotal,
+      missingApplicationIds: [],
+      duplicateApplicationIds: duplicateAppIds,
+    },
     companyId,
     totalApplicants,
-    buckets,
+    buckets: legacyBuckets,
     bucketDetails,
   };
 }
