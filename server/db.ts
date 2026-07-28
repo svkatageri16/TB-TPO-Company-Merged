@@ -51,6 +51,12 @@ function setupSQLite() {
     } catch (e) {
       console.warn("Could not set SQLite performance pragmas:", e);
     }
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_stage_id INTEGER NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_feedback TEXT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejected_at DATETIME NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejected_by_user_id INTEGER NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key)"); } catch (e) {}
     console.log("📦 SQLite Database initialized (WAL mode & busy_timeout=10s active)");
   }
 }
@@ -898,6 +904,26 @@ export async function initDb() {
           FOREIGN KEY (current_stage_id) REFERENCES job_stages(id) ON DELETE SET NULL
         `);
       } catch (err) { /* ignore if already exists */ }
+
+      // Add rejection tracking columns to job_applications
+      try {
+        await connection.query(`ALTER TABLE job_applications ADD COLUMN rejection_stage_id INT NULL`);
+      } catch (e) {}
+      try {
+        await connection.query(`ALTER TABLE job_applications ADD COLUMN rejection_feedback TEXT NULL`);
+      } catch (e) {}
+      try {
+        await connection.query(`ALTER TABLE job_applications ADD COLUMN rejected_at DATETIME NULL`);
+      } catch (e) {}
+      try {
+        await connection.query(`ALTER TABLE job_applications ADD COLUMN rejected_by_user_id INT NULL`);
+      } catch (e) {}
+      try {
+        await connection.query(`ALTER TABLE notifications ADD COLUMN idempotency_key VARCHAR(191) DEFAULT NULL`);
+      } catch (e) {}
+      try {
+        await connection.query(`CREATE UNIQUE INDEX idx_notifications_idempotency ON notifications(idempotency_key)`);
+      } catch (e) {}
 
       await connection.query(`
         CREATE TABLE IF NOT EXISTS tests (
@@ -3235,6 +3261,10 @@ async function runSqliteInit() {
       student_id INTEGER NOT NULL,
       current_stage_id INTEGER,
       status TEXT DEFAULT 'APPLIED',
+      rejection_stage_id INTEGER,
+      rejection_feedback TEXT,
+      rejected_at DATETIME,
+      rejected_by_user_id INTEGER,
       applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(student_id, job_id),
       FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
@@ -4220,18 +4250,32 @@ async function runSqliteInit() {
     sqliteDb.exec("CREATE INDEX IF NOT EXISTS idx_performance_stats_xp ON student_performance_stats(xp_points);");
 
     // Ensure assessment_batches has college_id on SQLite
-    const batchCols = sqliteDb.prepare("PRAGMA table_info(assessment_batches)").all();
-    const batchColNames = batchCols.map((c: any) => c.name);
-    if (batchColNames.length > 0 && !batchColNames.includes("college_id")) {
-      sqliteDb.exec("ALTER TABLE assessment_batches ADD COLUMN college_id INTEGER NOT NULL DEFAULT 1");
-    }
+    try {
+      const batchCols = sqliteDb.prepare("PRAGMA table_info(assessment_batches)").all();
+      const batchColNames = batchCols.map((c: any) => c.name);
+      if (batchColNames.length > 0 && !batchColNames.includes("college_id")) {
+        sqliteDb.exec("ALTER TABLE assessment_batches ADD COLUMN college_id INTEGER NOT NULL DEFAULT 1");
+      }
+    } catch (e) {}
 
     // Ensure assessment_location has location_address on SQLite
-    const locCols = sqliteDb.prepare("PRAGMA table_info(assessment_location)").all();
-    const locColNames = locCols.map((c: any) => c.name);
-    if (locColNames.length > 0 && !locColNames.includes("location_address")) {
-      sqliteDb.exec("ALTER TABLE assessment_location ADD COLUMN location_address TEXT DEFAULT NULL");
-    }
+    try {
+      const locCols = sqliteDb.prepare("PRAGMA table_info(assessment_location)").all();
+      const locColNames = locCols.map((c: any) => c.name);
+      if (locColNames.length > 0 && !locColNames.includes("location_address")) {
+        sqliteDb.exec("ALTER TABLE assessment_location ADD COLUMN location_address TEXT DEFAULT NULL");
+      }
+    } catch (e) {}
+
+    // Migration for job_applications rejection columns
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_stage_id INTEGER NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_feedback TEXT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejected_at DATETIME NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejected_by_user_id INTEGER NULL"); } catch (e) {}
+
+    // Migration for notifications idempotency_key
+    try { sqliteDb.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key)"); } catch (e) {}
     // Clean up seeded demo batches to ensure "no static data"
     try {
       sqliteDb.exec("DELETE FROM assessment_batches WHERE batch_name IN ('CS-2024', 'IT-2024', 'ECE-2024')");

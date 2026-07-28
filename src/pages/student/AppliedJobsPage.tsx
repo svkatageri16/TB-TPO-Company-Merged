@@ -432,6 +432,26 @@ export function AppliedJobsPage() {
                       {/* Main Scroll Content Area */}
                       <div className="p-6 sm:p-8 space-y-8">
                          
+                         {/* Rejection Feedback Banner if Rejected */}
+                         {selectedApp.status === 'REJECTED' && (
+                            <div className="p-6 bg-rose-50/80 border border-rose-200/90 rounded-2xl relative overflow-hidden shadow-sm">
+                               <div className="flex items-center gap-2 mb-3 text-rose-800">
+                                  <AlertCircle size={18} className="text-rose-600 shrink-0" />
+                                  <h4 className="text-xs font-black uppercase tracking-widest">
+                                     Application Status: Rejection Feedback
+                                  </h4>
+                               </div>
+                               <p className="text-xs font-semibold text-rose-950 leading-relaxed bg-white/90 p-4 rounded-xl border border-rose-150 italic shadow-2xs">
+                                  "{selectedApp.rejection_feedback || "Thank you for your interest in this role and company. Although your profile was not selected for advancement at this time, we encourage you to explore other openings on VEGA."}"
+                               </p>
+                               {selectedApp.rejected_at && (
+                                  <p className="text-[10px] text-rose-600 font-bold mt-3 flex items-center gap-1">
+                                     <Clock size={12} /> Decision Recorded: {new Date(selectedApp.rejected_at).toLocaleDateString()}
+                                  </p>
+                               )}
+                            </div>
+                         )}
+
                          {/* Hiring timeline tracking block */}
                          <div className="p-6 bg-slate-50 border border-slate-200 rounded-2xl relative overflow-hidden">
                             <div className="flex items-center justify-between mb-2">

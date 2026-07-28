@@ -1,5 +1,6 @@
 import db from "../db.ts";
 import { sendJobEndingSoonEmail } from "./emailService.ts";
+import { processJobEnding } from "./jobLifecycleService.ts";
 
 export async function checkAndProcessJobExpirations() {
   try {
@@ -17,12 +18,9 @@ export async function checkAndProcessJobExpirations() {
       deadlineDate.setHours(23, 59, 59, 999);
 
       if (deadlineDate < now) {
-        // Natural Expiry: Set status to CLOSED, set ended_at and pipeline_ended_at
+        // Natural Expiry: Set status to CLOSED and notify unresolved candidates idempotently
         console.log(`[JobExpiryService] Job ID ${job.id} (${job.title}) has reached its deadline and is now CLOSED.`);
-        await db.query(
-          "UPDATE jobs SET status = 'CLOSED', ended_at = ?, pipeline_ended_at = ? WHERE id = ?",
-          [now, now, job.id]
-        );
+        await processJobEnding(job.id, job.company_id);
       } else {
         // Check if within reminder window (e.g. 24 hours) and reminder hasn't been sent yet
         const diffMs = deadlineDate.getTime() - now.getTime();

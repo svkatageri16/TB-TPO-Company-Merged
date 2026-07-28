@@ -564,9 +564,9 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
     }
     if (jobStatus !== 'all') {
       if (jobStatus === 'active') {
-        filteredJobs = filteredJobs.filter((j: any) => j.status === 'OPEN');
+        filteredJobs = filteredJobs.filter(isJobActive);
       } else if (jobStatus === 'ended') {
-        filteredJobs = filteredJobs.filter((j: any) => j.status !== 'OPEN');
+        filteredJobs = filteredJobs.filter(isJobEnded);
       }
     }
 
@@ -583,6 +583,9 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
         a.status,
         a.id as application_id,
         a.current_stage_id,
+        a.rejection_stage_id,
+        a.rejection_feedback,
+        a.rejected_at,
         a.job_id as job_id,
         a.applied_at,
         (SELECT MIN(created_at) FROM application_history WHERE application_id = a.id AND action IN ('SELECTED', 'HIRED', 'OFFER', 'OFFER_ACCEPTED', 'VERIFIED_SELECTION', 'SHORTLISTED_FOR_HIRE', 'MOVED_TO_SELECTED', 'MOVED_TO_HIRED', 'SHORTLISTED')) as hired_at,
@@ -616,14 +619,30 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
     }
     let filteredApplicants = filteredAllApplicants;
 
+    const isAppJobActive = (a: any) => {
+      if (!a) return false;
+      if (a.job_status === 'CLOSED') return false;
+      if (a.job_ended_at) return false;
+      const isValidDeadline = a.job_deadline && 
+        a.job_deadline !== 'null' && 
+        a.job_deadline !== 'undefined' && 
+        a.job_deadline.toString().trim() !== '' && 
+        a.job_deadline !== '0000-00-00' && 
+        !isNaN(new Date(a.job_deadline).getTime());
+      if (isValidDeadline) {
+        return new Date(a.job_deadline).setHours(23, 59, 59, 999) >= Date.now();
+      }
+      return a.job_status === 'OPEN' || a.job_status === 'Active';
+    };
+
     if (jobId !== 'all') {
       filteredApplicants = filteredApplicants.filter((a: any) => String(a.job_id) === String(jobId));
     }
     if (jobStatus !== 'all') {
       if (jobStatus === 'active') {
-        filteredApplicants = filteredApplicants.filter((a: any) => a.job_status === 'OPEN' || a.job_status === 'Active');
+        filteredApplicants = filteredApplicants.filter(isAppJobActive);
       } else if (jobStatus === 'ended') {
-        filteredApplicants = filteredApplicants.filter((a: any) => a.job_status !== 'OPEN' && a.job_status !== 'Active');
+        filteredApplicants = filteredApplicants.filter((a: any) => !isAppJobActive(a));
       }
     }
     if (days !== 'all') {

@@ -3,6 +3,7 @@ import db from "../db.ts";
 import { sendEmail, sendInterviewInvitationToAttendee } from "../services/emailService.ts";
 import { authenticate } from "../middleware/auth.ts";
 import { checkAndProcessJobExpirations } from "../services/jobExpiryService.ts";
+import { processJobEnding, isJobActive, isJobEnded } from "../services/jobLifecycleService.ts";
 import { GoogleGenAI, Type } from "@google/genai";
 import multer from "multer";
 import crypto from "crypto";
@@ -1406,19 +1407,31 @@ router.post("/update-stage", async (req, res) => {
     }
     
     let status = apps[0].status;
+    const userId = (req as any).user?.userId || req.body.userId || null;
     if (action === 'REJECTED') {
       status = 'REJECTED';
+      const rejStageId = stageId || apps[0].current_stage_id;
+      const cleanFeedback = (feedback !== undefined && feedback !== null) ? String(feedback).trim().slice(0, 1000) : null;
+      await db.query(`
+        UPDATE job_applications 
+        SET status = 'REJECTED', rejection_stage_id = ?, rejection_feedback = ?, rejected_at = CURRENT_TIMESTAMP, rejected_by_user_id = ?
+        WHERE id = ?
+      `, [rejStageId, cleanFeedback, userId, applicationId]);
     } else if (action === 'SELECTED') {
       status = 'SELECTED';
+      await db.query(`
+        UPDATE job_applications 
+        SET current_stage_id = ?, status = ?
+        WHERE id = ?
+      `, [stageId, status, applicationId]);
     } else {
       status = 'IN_PROGRESS';
+      await db.query(`
+        UPDATE job_applications 
+        SET current_stage_id = ?, status = ?
+        WHERE id = ?
+      `, [stageId, status, applicationId]);
     }
-
-    await db.query(`
-      UPDATE job_applications 
-      SET current_stage_id = ?, status = ?
-      WHERE id = ?
-    `, [stageId, status, applicationId]);
 
     const historyNotes = feedback !== undefined && feedback !== null ? feedback : notes;
 
@@ -1612,7 +1625,14 @@ router.get("/applicants/:jobId", async (req, res) => {
         JA.status,
         JA.applied_at,
         JA.current_stage_id,
+        JA.rejection_stage_id,
+        JA.rejection_feedback,
+        JA.rejected_at,
         JA.job_id as job_id,
+        J.title as job_title,
+        J.status as job_status,
+        J.ended_at as job_ended_at,
+        J.deadline as job_deadline,
         SP.id as student_id,
         U.id as user_id,
         SP.full_name,
@@ -1630,6 +1650,7 @@ router.get("/applicants/:jobId", async (req, res) => {
         (SELECT answers_json FROM test_submissions WHERE application_id = JA.id ORDER BY submitted_at DESC LIMIT 1) as latest_test_answers,
         SPS.avg_interview_score
       FROM job_applications JA
+      JOIN jobs J ON JA.job_id = J.id
       JOIN student_profiles SP ON JA.student_id = SP.id
       JOIN users U ON SP.user_id = U.id
       LEFT JOIN talent_scores TS ON U.id = TS.user_id
@@ -2047,15 +2068,7 @@ router.put("/:id/end", authenticate, async (req: any, res) => {
     }
 
     const now = new Date();
-    const [updateResult]: any = await db.query(
-      "UPDATE jobs SET status = 'CLOSED', ended_at = ?, pipeline_ended_at = ? WHERE id = ? AND company_id = ? AND status = 'OPEN' AND ended_at IS NULL",
-      [now, now, jobId, companyId]
-    );
-
-    const affectedRows = updateResult?.affectedRows ?? updateResult?.changes ?? 0;
-    if (affectedRows !== 1) {
-      return res.status(400).json({ success: false, message: "Failed to end job posting. Job may already be closed or ended." });
-    }
+    await processJobEnding(Number(jobId), Number(companyId));
 
     // Audit log - inserted ONLY after successful job update
     try {

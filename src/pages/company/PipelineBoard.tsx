@@ -2571,7 +2571,7 @@ export function PipelineBoard() {
             jobTitle={feedbackConfig.jobTitle}
             actionType={feedbackConfig.actionType}
             onConfirm={(feedbackText) => {
-              updateCandidateStage(feedbackConfig.appId, feedbackConfig.newStage, feedbackText);
+              updateCandidateStage(feedbackConfig.appId, feedbackConfig.newStage, feedbackText, true);
             }}
             isSubmitting={isSubmittingFeedback}
           />
