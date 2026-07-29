@@ -1420,17 +1420,20 @@ export function PipelineBoard() {
               />
             )}
 
-            {/* Stage Summary Cards Grid (6 Stages) */}
+            {/* Stage Summary Cards Grid (7 Stages) */}
             <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest pl-1.5 mb-4">
               Pipeline Stages Overview
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-4 px-1 pb-10">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-2.5 xl:gap-3 px-1 pb-6">
               {PIPELINE_STAGES.map((stage) => {
                 const stageConf = getStageConfig(stage);
                 const IconComp = stageConf?.icon || HelpCircle;
                 const stageApps = currentApplicants.filter(
                   (a) => a.canonical_stage_key === stage.id
                 );
+
+                const isRose = stageConf?.color === "rose";
+                const isEmerald = stageConf?.color === "emerald";
 
                 // Average talent score
                 const totalScore = stageApps.reduce(
@@ -1460,38 +1463,40 @@ export function PipelineBoard() {
                     layoutId={`stage-card-${stage.id}`}
                     whileHover={{ y: -4, transition: { duration: 0.15 } }}
                     className={`${
-                      stageConf?.color === "emerald"
+                      isEmerald
                         ? "bg-emerald-50/30 border-emerald-200/80 shadow-emerald-100/50"
+                        : isRose
+                        ? "bg-rose-50/30 border-rose-200/80 shadow-rose-100/50"
                         : "bg-white border-slate-200/90 shadow-sm"
-                    } rounded-[24px] p-5 border hover:shadow-md transition-all flex flex-col justify-between`}
+                    } rounded-[20px] p-3.5 xl:p-4 border hover:shadow-md transition-all flex flex-col justify-between`}
                   >
                     <div>
                       {/* Top stage icon */}
                       <div
-                        className={`w-12 h-12 rounded-[18px] flex items-center justify-center mb-4 ${stageConf?.theme?.iconBg || "bg-slate-100"}`}
+                        className={`w-10 h-10 rounded-[14px] flex items-center justify-center mb-3 ${stageConf?.theme?.iconBg || "bg-slate-100"}`}
                       >
-                        <IconComp size={22} className="stroke-[2.25]" />
+                        <IconComp size={20} className="stroke-[2.25]" />
                       </div>
 
                       {/* Stage Label */}
-                      <h3 className={`${stageConf?.color === "emerald" ? "text-emerald-500" : "text-slate-400"} text-[10px] font-black uppercase tracking-widest leading-none mb-1`}>
+                      <h3 className={`${isEmerald ? "text-emerald-500" : isRose ? "text-rose-500" : "text-slate-400"} text-[10px] font-black uppercase tracking-wider leading-none mb-1`}>
                         {stageConf?.label || stage.label}
                       </h3>
 
                       {/* Large Candidate Count Badge */}
-                      <div className={`text-3xl font-extrabold ${stageConf?.color === "emerald" ? "text-emerald-800" : "text-slate-800"} tracking-tight leading-none mb-2 select-none`}>
+                      <div className={`text-2xl xl:text-3xl font-extrabold ${isEmerald ? "text-emerald-800" : isRose ? "text-rose-800" : "text-slate-800"} tracking-tight leading-none mb-1.5 select-none`}>
                         {stageApps.length}
                       </div>
 
                       {/* Short Description */}
-                      <p className="text-[11px] font-bold text-slate-500 leading-snug mb-5 min-h-[34px]">
+                      <p className="text-[11px] font-bold text-slate-500 leading-snug mb-3 min-h-[30px] line-clamp-2">
                         {stageConf?.desc || "Candidates awaiting review"}
                       </p>
 
-                      <div className="border-t border-slate-100 my-3.5" />
+                      <div className="border-t border-slate-100 my-2.5" />
 
                       {/* Summary Metrics */}
-                      <div className="space-y-3">
+                      <div className="space-y-2">
                         <div>
                           <span className="block text-[8px] font-black uppercase text-slate-400 tracking-wider mb-0.5">
                             Avg Match Score
@@ -1504,7 +1509,7 @@ export function PipelineBoard() {
                         </div>
                         <div>
                           <span className="block text-[8px] font-black uppercase text-slate-400 tracking-wider mb-0.5">
-                            Newest Application
+                            {stage.id === "REJECTED" ? "Newest Rejection" : "Newest Application"}
                           </span>
                           <span className="text-xs font-bold text-slate-700">
                             {newestDate
@@ -1517,9 +1522,11 @@ export function PipelineBoard() {
 
                     <button
                       onClick={() => handleSeeMoreStage(stage.id)}
-                      className={`w-full mt-5 py-2.5 bg-white border ${
-                        stageConf?.color === "emerald"
+                      className={`w-full mt-3.5 py-2 bg-white border ${
+                        isEmerald
                           ? "border-emerald-600 hover:bg-emerald-600/5 text-emerald-600"
+                          : isRose
+                          ? "border-rose-600 hover:bg-rose-600/5 text-rose-600"
                           : "border-blue-600 hover:bg-blue-600/5 text-blue-600"
                       } rounded-xl text-xs font-extrabold tracking-wide transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer leading-none`}
                     >
@@ -1528,93 +1535,6 @@ export function PipelineBoard() {
                   </motion.div>
                 );
               })}
-
-              {/* Rejected Candidates Card */}
-              {(() => {
-                const rejectedApps = currentApplicants.filter(isRejectedCandidate);
-                const IconComp = XCircle;
-                return (
-                  <motion.div
-                    key="REJECTED"
-                    layoutId="stage-card-REJECTED"
-                    whileHover={{ y: -4, transition: { duration: 0.15 } }}
-                    className="bg-rose-50/30 border-rose-200/80 shadow-rose-100/50 rounded-[24px] p-5 border hover:shadow-md transition-all flex flex-col justify-between"
-                  >
-                    <div>
-                      {/* Top stage icon */}
-                      <div className="w-12 h-12 rounded-[18px] flex items-center justify-center mb-4 bg-rose-100 text-rose-600">
-                        <IconComp size={22} className="stroke-[2.25]" />
-                      </div>
-
-                      {/* Stage Label */}
-                      <h3 className="text-[10px] font-black text-rose-500 uppercase tracking-widest leading-none mb-1">
-                        Rejected Candidates
-                      </h3>
-
-                      {/* Large Candidate Count Badge */}
-                      <div className="text-3xl font-extrabold text-rose-800 tracking-tight leading-none mb-2 select-none">
-                        {rejectedApps.length}
-                      </div>
-
-                      {/* Short Description */}
-                      <p className="text-[11px] font-bold text-slate-500 leading-snug mb-5 min-h-[34px]">
-                        Candidates rejected across pipeline phases
-                      </p>
-
-                      <div className="border-t border-slate-100 my-3.5" />
-
-                      {/* Summary Metrics */}
-                      <div className="space-y-3">
-                        <div>
-                          <span className="block text-[8px] font-black uppercase text-slate-400 tracking-wider mb-0.5">
-                            Avg Match Score
-                          </span>
-                          <span className="text-xs font-black text-slate-700">
-                            {(() => {
-                              const totalScore = rejectedApps.reduce(
-                                (acc, curr) => acc + (curr.talent_score || 0),
-                                0,
-                              );
-                              const avgScore =
-                                rejectedApps.length > 0
-                                  ? Math.round(totalScore / rejectedApps.length)
-                                  : 0;
-                              return avgScore > 0 ? `${avgScore}%` : "—";
-                            })()}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="block text-[8px] font-black uppercase text-slate-400 tracking-wider mb-0.5">
-                            Newest Rejection
-                          </span>
-                          <span className="text-xs font-bold text-slate-700">
-                            {(() => {
-                              const newestDate = rejectedApps.reduce(
-                                (latest, curr) => {
-                                  if (!curr.applied_at) return latest;
-                                  const currTime = new Date(curr.applied_at).getTime();
-                                  if (!latest || currTime > latest.getTime())
-                                    return new Date(curr.applied_at);
-                                  return latest;
-                                },
-                                null as Date | null,
-                              );
-                              return newestDate ? formatDate(newestDate.toISOString()) : "—";
-                            })()}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleSeeMoreStage("REJECTED")}
-                      className="w-full mt-5 py-2.5 bg-white border border-rose-600 hover:bg-rose-600/5 text-rose-600 rounded-xl text-xs font-extrabold tracking-wide transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer leading-none"
-                    >
-                      See More
-                    </button>
-                  </motion.div>
-                );
-              })()}
             </div>
           </motion.div>
         </AnimatePresence>
