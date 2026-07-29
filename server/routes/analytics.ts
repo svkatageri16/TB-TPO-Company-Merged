@@ -432,68 +432,14 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
   const hrUserId = String(req.query.hrUserId || 'all');
   const jobStatus = String(req.query.jobStatus || 'all');
 
-  // Backend identical helper function for stage categorization
+  // Backend helper function delegating to canonical stage resolver mapStageToCanonicalKey
   const normalizeStageBucket = (app: any) => {
-    const status = String(app.status || '').toUpperCase();
-    const stageType = String(app.current_stage_type || app.stage_type || '').toUpperCase();
-    const stageName = String(app.current_stage_name || app.stage_name || '').toUpperCase();
-
-    // Exclude terminal negative statuses
-    if (status === 'REJECTED' || status === 'CANCELLED' || status === 'WITHDRAWN') {
-      return 'REJECTED';
-    }
-
-    // Check Hired / Selected
-    if (
-      status === 'SELECTED' ||
-      status === 'HIRED' ||
-      status === 'VERIFIED_SELECTION' ||
-      status === 'OFFER_ACCEPTED' ||
-      status === 'SHORTLISTED' ||
-      stageType === 'HIRED' ||
-      stageType === 'SELECTED' ||
-      stageName === 'HIRED' ||
-      stageName === 'SELECTED'
-    ) {
-      return 'HIRED';
-    }
-
-    // Check Offer
-    if (
-      status === 'OFFER_EXTENDED' ||
-      stageType.includes('OFFER') ||
-      stageName.includes('OFFER')
-    ) {
-      return 'OFFER';
-    }
-
-    if (
-      stageType.includes('INTERVIEW') ||
-      stageType.includes('HR') ||
-      stageName.includes('INTERVIEW') ||
-      stageName.includes('HR')
-    ) {
-      return 'INTERVIEW';
-    }
-
-    if (
-      stageType.includes('TEST') ||
-      stageType.includes('ASSESSMENT') ||
-      stageName.includes('TEST') ||
-      stageName.includes('ASSESSMENT') ||
-      stageName.includes('APTITUDE')
-    ) {
-      return 'ASSESSMENT';
-    }
-
-    if (
-      stageType.includes('SCREEN') ||
-      stageName.includes('SCREEN') ||
-      status === 'IN_PROGRESS'
-    ) {
-      return 'SCREENING';
-    }
-
+    const { key } = mapStageToCanonicalKey(app);
+    if (key === 'rejected') return 'REJECTED';
+    if (key === 'selected') return 'HIRED';
+    if (key === 'technicalInterview' || key === 'hrInterview') return 'INTERVIEW';
+    if (key === 'assessment') return 'ASSESSMENT';
+    if (key === 'aiScreening') return 'SCREENING';
     return 'APPLIED';
   };
 
@@ -651,6 +597,10 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
       WHERE j.company_id = ?
       ORDER BY a.applied_at DESC
     `, [companyId]);
+
+    (allApplicants || []).forEach((a: any) => {
+      a.canonical_stage_key = mapStageToCanonicalKey(a).key;
+    });
 
     // Apply filters in memory for extreme robustness and dialect compatibility
     let filteredAllApplicants = allApplicants || [];

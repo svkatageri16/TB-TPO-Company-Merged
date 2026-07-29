@@ -41,9 +41,9 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import toast from "react-hot-toast";
-import { FeedbackConfirmModal } from "../../components/company/FeedbackConfirmModal.tsx";
+import { FeedbackConfirmModal, UndoConfirmModal } from "../../components/company/FeedbackConfirmModal.tsx";
 
-// Define the stages for the pipeline
+// Define the 7 canonical stages for the pipeline
 const PIPELINE_STAGES = [
   { id: "APPLIED", label: "Applied", color: "blue" },
   { id: "SCREENING", label: "AI Screening", color: "indigo" },
@@ -51,7 +51,60 @@ const PIPELINE_STAGES = [
   { id: "INTERVIEW", label: "Technical Interview", color: "orange" },
   { id: "HR", label: "HR Interview", color: "pink" },
   { id: "SHORTLISTED", label: "Selected", color: "emerald" },
+  { id: "REJECTED", label: "Rejected", color: "rose" },
 ];
+
+const STAGE_CONFIGS: Record<string, any> = {
+  APPLIED: {
+    color: "blue",
+    icon: Briefcase,
+    label: "Applied",
+    desc: "Newly received candidate applications awaiting review",
+    theme: { iconBg: "bg-blue-50 text-blue-600" },
+  },
+  SCREENING: {
+    color: "indigo",
+    icon: Sparkles,
+    label: "AI Screening",
+    desc: "Candidates evaluated by AI resume and profile matching",
+    theme: { iconBg: "bg-indigo-50 text-indigo-600" },
+  },
+  TESTING: {
+    color: "purple",
+    icon: Clock,
+    label: "Assessment",
+    desc: "Online assessments and skill tests scheduled or complete",
+    theme: { iconBg: "bg-purple-50 text-purple-600" },
+  },
+  INTERVIEW: {
+    color: "orange",
+    icon: MessageSquare,
+    label: "Technical Interview",
+    desc: "Technical discussion and coding assessments",
+    theme: { iconBg: "bg-orange-50 text-orange-600" },
+  },
+  HR: {
+    color: "pink",
+    icon: UserCheck,
+    label: "HR Interview",
+    desc: "Cultural fit and final HR evaluation",
+    theme: { iconBg: "bg-pink-50 text-pink-600" },
+  },
+  SHORTLISTED: {
+    color: "emerald",
+    icon: Award,
+    label: "Selected",
+    desc: "Selected candidates awaiting offer/onboarding",
+    theme: { iconBg: "bg-emerald-50 text-emerald-600" },
+  },
+  REJECTED: {
+    color: "rose",
+    icon: XCircle,
+    label: "Rejected",
+    desc: "Candidates dropped or rejected at any stage",
+    theme: { iconBg: "bg-rose-50 text-rose-600" },
+  },
+};
 
 const formatInterviewScore = (score: any) => {
   if (score === null || score === undefined) return "—";
@@ -208,8 +261,59 @@ export function PipelineBoard() {
     setContactedCandidates((prev) => ({ ...prev, [appId]: true }));
   };
 
+  // Request sequence ref to prevent race conditions on fast filter switches
+  const requestSeqRef = React.useRef(0);
+
+  // Undo Decision modal state
+  const [undoModalConfig, setUndoModalConfig] = useState<{
+    isOpen: boolean;
+    candidate: any;
+    isSubmitting: boolean;
+  }>({
+    isOpen: false,
+    candidate: null,
+    isSubmitting: false,
+  });
+
+  const openUndoModal = (candidate: any) => {
+    setUndoModalConfig({
+      isOpen: true,
+      candidate,
+      isSubmitting: false,
+    });
+  };
+
+  const handleUndoConfirm = async (reason: string | null, notifyCandidate: boolean) => {
+    if (!undoModalConfig.candidate) return;
+    const candidate = undoModalConfig.candidate;
+
+    try {
+      setUndoModalConfig((prev) => ({ ...prev, isSubmitting: true }));
+      const res = await api.post(`/jobs/applications/${candidate.application_id}/undo-decision`, {
+        reason,
+        notifyCandidate,
+      });
+
+      if (res.data && res.data.success) {
+        toast.success(res.data.message || "Candidate decision successfully reversed.");
+        setUndoModalConfig({ isOpen: false, candidate: null, isSubmitting: false });
+        setPreviewCandidate(null);
+        await fetchData();
+        window.dispatchEvent(new CustomEvent("vega:pipeline-updated"));
+      } else {
+        toast.error(res.data?.message || "Failed to reverse candidate decision.");
+        setUndoModalConfig((prev) => ({ ...prev, isSubmitting: false }));
+      }
+    } catch (err: any) {
+      console.error("Error reversing candidate decision:", err);
+      toast.error(err.response?.data?.message || "Failed to reverse candidate decision.");
+      setUndoModalConfig((prev) => ({ ...prev, isSubmitting: false }));
+    }
+  };
+
   const loadPipeline = async () => {
     if (!user?.id) return;
+    const seq = ++requestSeqRef.current;
     try {
       setLoading(true);
 
@@ -223,58 +327,74 @@ export function PipelineBoard() {
         }
       }
 
-      if (selectedJobId === "ALL") {
-        setCustomStages([]);
-        const analyticsRes = await api.get(`/analytics/employer/${user?.id}`);
-        if (analyticsRes.data.success) {
-          const fetchedApplicants = (
-            analyticsRes.data.data.applicants || []
-          ).map((app: any) => ({
-            ...app,
-            raw_status: app.status,
-            status: app.status || "APPLIED",
-          }));
-          setAllApplicants(fetchedApplicants);
-        }
-      } else {
-        try {
-          const res = await api.get(`/jobs/applicants/${selectedJobId}`);
-          if (res.data && res.data.success) {
-            const fetchedApplicants = (res.data.data.applicants || []).map(
-              (app: any) => {
-                const hasStage = (res.data.data.stages || []).some(
-                  (cs: any) => cs.id === app.current_stage_id,
-                );
-                const statusVal = hasStage
-                  ? app.current_stage_id.toString()
-                  : app.status || "APPLIED";
-                return {
-                  ...app,
-                  raw_status: app.status,
-                  status: statusVal,
-                  job_title:
-                    companyJobs.find(
-                      (j: any) => j.id.toString() === selectedJobId,
-                    )?.title || app.job_title,
-                };
-              },
-            );
-            setAllApplicants(fetchedApplicants);
-            setCustomStages(res.data.data.stages || []);
-          } else {
-            // Invalid or inaccessible job ID, fallback to ALL
-            setSelectedJobId("ALL");
-          }
-        } catch (err) {
-          console.error("Error loading specific job pipeline, falling back to ALL:", err);
-          setSelectedJobId("ALL");
-        }
+      // Fetch canonical pipeline snapshot from backend
+      const scopeParam = pipelineFilter ? pipelineFilter.toLowerCase() : "active";
+      const jobParam = selectedJobId !== "ALL" ? selectedJobId : "";
+      const snapshotUrl = `/analytics/pipeline/snapshot?scope=${scopeParam}&jobId=${jobParam}&searchQuery=${encodeURIComponent(searchQuery)}&minScore=${minScore}`;
+
+      const snapshotRes = await api.get(snapshotUrl);
+      if (seq !== requestSeqRef.current) return;
+
+      if (!snapshotRes.data || !snapshotRes.data.success) {
+        toast.error("Failed to fetch pipeline snapshot");
+        return;
       }
+
+      const snapshot = snapshotRes.data.data;
+
+      let jobCustomStages: any[] = [];
+      if (selectedJobId !== "ALL") {
+        try {
+          const jobRes = await api.get(`/jobs/applicants/${selectedJobId}`);
+          if (seq !== requestSeqRef.current) return;
+          if (jobRes.data && jobRes.data.success) {
+            jobCustomStages = jobRes.data.data.stages || [];
+          }
+        } catch (err) {}
+      }
+
+      setCustomStages(selectedJobId !== "ALL" ? jobCustomStages : []);
+
+      // Process candidates from snapshot.stages
+      const stagesObj = snapshot.stages || {};
+      const flattenedList: any[] = [];
+
+      const bucketToCanonicalKey: Record<string, string> = {
+        applied: "APPLIED",
+        aiScreening: "SCREENING",
+        assessment: "TESTING",
+        technicalInterview: "INTERVIEW",
+        hrInterview: "HR",
+        selected: "SHORTLISTED",
+        rejected: "REJECTED",
+      };
+
+      Object.keys(bucketToCanonicalKey).forEach((bucketKey) => {
+        const candList = stagesObj[bucketKey] || [];
+        const canonicalKey = bucketToCanonicalKey[bucketKey];
+
+        candList.forEach((appItem: any) => {
+          const jobObj = companyJobs.find((j: any) => j.id.toString() === String(appItem.job_id));
+
+          flattenedList.push({
+            ...appItem,
+            raw_status: appItem.status || appItem.app_status,
+            canonical_stage_key: canonicalKey,
+            status: canonicalKey,
+            job_title: jobObj?.title || appItem.job_title || "Position",
+          });
+        });
+      });
+
+      setAllApplicants(flattenedList);
+
     } catch (e) {
-      console.error(e);
+      console.error("Error loading pipeline snapshot:", e);
       toast.error("Failed to load pipeline data");
     } finally {
-      setLoading(false);
+      if (seq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -386,12 +506,26 @@ export function PipelineBoard() {
 
       // Optimistic Update
       const targetStage = customStages.find((s: any) => Number(s.id) === numericStageId);
+      let newCanonicalKey = "APPLIED";
+      if (action === "REJECTED") {
+        newCanonicalKey = "REJECTED";
+      } else if (action === "SELECTED") {
+        newCanonicalKey = "SHORTLISTED";
+      } else if (targetStage) {
+        newCanonicalKey = normalizePipelineStage({
+          stage_type: targetStage.stage_type,
+          stage_name: targetStage.stage_name,
+          status: "IN_PROGRESS",
+        });
+      }
+
       setAllApplicants((prev) =>
         prev.map((a) =>
           a.application_id === appId
             ? {
                 ...a,
-                status: action === "REJECTED" ? "REJECTED" : numericStageId.toString(),
+                canonical_stage_key: newCanonicalKey,
+                status: newCanonicalKey,
                 current_stage_id: numericStageId,
                 current_stage_type: action === "REJECTED" ? a.current_stage_type : (targetStage?.stage_type || a.current_stage_type),
                 current_stage_name: action === "REJECTED" ? a.current_stage_name : (targetStage?.stage_name || a.current_stage_name),
@@ -456,46 +590,22 @@ export function PipelineBoard() {
     stage_type?: string;
     description?: string;
   }) => {
-    const type = (stage.stage_type || "").toUpperCase();
-    const label = (stage.label || "").toUpperCase();
-
-    let key = "APPLIED";
-    if (
-      type === "SCREENING" ||
-      label.includes("SCREEN") ||
-      label.includes("AI") ||
-      label.includes("COPILOT")
-    ) {
-      key = "SCREENING";
-    } else if (
-      type === "TEST" ||
-      type === "ASSESSMENT" ||
-      label.includes("TEST") ||
-      label.includes("ASSESS")
-    ) {
-      key = "TESTING";
-    } else if (type === "INTERVIEW" || label.includes("INTERVIEW")) {
-      if (label.includes("HR")) {
-        key = "HR";
-      } else {
-        key = "INTERVIEW";
-      }
-    } else if (
-      type === "SELECTED" ||
-      type === "OFFER" ||
-      label.includes("SELECT") ||
-      label.includes("SHORTLIST") ||
-      label.includes("HIRE") ||
-      label.includes("OFFER") ||
-      label.includes("ACC")
-    ) {
-      key = "SHORTLISTED";
+    let key = stage.id ? stage.id.toUpperCase() : "APPLIED";
+    if (!STAGE_CONFIGS[key]) {
+      const type = (stage.stage_type || "").toUpperCase();
+      const label = (stage.label || "").toUpperCase();
+      if (type === "SCREENING" || label.includes("SCREEN") || label.includes("AI")) key = "SCREENING";
+      else if (type === "TEST" || type === "ASSESSMENT" || label.includes("TEST") || label.includes("ASSESS")) key = "TESTING";
+      else if (type === "INTERVIEW" || label.includes("INTERVIEW")) key = label.includes("HR") ? "HR" : "INTERVIEW";
+      else if (type === "SELECTED" || type === "OFFER" || label.includes("SELECT") || label.includes("SHORTLIST")) key = "SHORTLISTED";
+      else if (type === "REJECTED" || label.includes("REJECT") || label.includes("DROP")) key = "REJECTED";
+      else key = "APPLIED";
     }
 
     const base = STAGE_CONFIGS[key] || STAGE_CONFIGS.APPLIED;
     return {
       ...base,
-      label: stage.label,
+      label: stage.label || base.label,
       desc: stage.description || base.desc,
     };
   };
@@ -571,28 +681,8 @@ export function PipelineBoard() {
       list = list.filter((a) => (a.talent_score || 0) >= minScore);
     }
 
-    list = list.map((a) => {
-      if (isRejectedCandidate(a)) {
-        a.status = "REJECTED";
-      } else if (selectedJobId !== "ALL" && customStages.length > 0) {
-        const hasStage = customStages.some(
-          (cs) => cs.id === a.current_stage_id,
-        );
-        if (hasStage) {
-          a.status = a.current_stage_id.toString();
-        } else {
-          const firstStage = customStages[0];
-          if (firstStage) {
-            a.status = firstStage.id.toString();
-          }
-        }
-      } else {
-        a.status = normalizePipelineStage(a);
-      }
-      return a;
-    });
     return list;
-  }, [allApplicants, selectedJobId, searchQuery, minScore, customStages, pipelineFilter, jobs]);
+  }, [allApplicants, selectedJobId, searchQuery, minScore, pipelineFilter, jobs]);
 
   const insights = useMemo(() => {
     const total = currentApplicants.length;
@@ -943,10 +1033,9 @@ export function PipelineBoard() {
     if (selectedStageView === null) return [];
 
     // Begin with matching stage
-    let list =
-      selectedStageView === "REJECTED"
-        ? currentApplicants.filter(isRejectedCandidate)
-        : currentApplicants.filter((a) => a.status === selectedStageView);
+    let list = currentApplicants.filter(
+      (a) => a.canonical_stage_key === selectedStageView
+    );
 
     // Apply Rejected Phase filter
     if (selectedStageView === "REJECTED" && filterRejectedPhase !== "ALL") {
@@ -1333,11 +1422,11 @@ export function PipelineBoard() {
               Pipeline Stages Overview
             </h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-4 px-1 pb-10">
-              {activeStages.map((stage) => {
+              {PIPELINE_STAGES.map((stage) => {
                 const stageConf = getStageConfig(stage);
                 const IconComp = stageConf?.icon || HelpCircle;
                 const stageApps = currentApplicants.filter(
-                  (a) => a.status === stage.id
+                  (a) => a.canonical_stage_key === stage.id
                 );
 
                 // Average talent score
@@ -2254,11 +2343,20 @@ export function PipelineBoard() {
                                 </button>
 
                                 {/* Next Stage Action code */}
-                                {String(cand.status || "").toUpperCase() ===
-                                "REJECTED" ? (
-                                  <span className="inline-flex items-center px-3 py-1.5 rounded-xl text-[10px] font-extrabold uppercase bg-red-50 text-red-600 border border-red-100 select-none shadow-sm cursor-not-allowed">
-                                    Rejected
-                                  </span>
+                                {String(cand.status || "").toUpperCase() === "REJECTED" || String(cand.status || "").toUpperCase() === "SHORTLISTED" || String(cand.status || "").toUpperCase() === "SELECTED" || String(cand.raw_status || "").toUpperCase() === "SELECTED" ? (
+                                  <div className="flex items-center justify-center gap-2">
+                                    <span className={`inline-flex items-center px-2.5 py-1 rounded-xl text-[10px] font-extrabold uppercase border shadow-sm select-none ${isRejectedCandidate(cand) ? "bg-red-50 text-red-600 border-red-100" : "bg-emerald-50 text-emerald-600 border-emerald-100"}`}>
+                                      {isRejectedCandidate(cand) ? "Rejected" : "Selected"}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => openUndoModal(cand)}
+                                      className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[10px] font-black uppercase tracking-wider shadow-sm flex items-center gap-1 cursor-pointer transition-all active:scale-95 shrink-0"
+                                      title="Undo candidate decision"
+                                    >
+                                      <RefreshCw size={12} /> Undo
+                                    </button>
+                                  </div>
                                 ) : (
                                   <button
                                     onClick={() => {
@@ -2419,6 +2517,7 @@ export function PipelineBoard() {
                         action,
                       )
                     }
+                    onUndoDecision={openUndoModal}
                     contactedCandidates={contactedCandidates}
                     markAsContacted={markAsContacted}
                     activeStages={activeStages}
@@ -2443,6 +2542,7 @@ export function PipelineBoard() {
               onAction={(action: string) =>
                 updateCandidateStage(previewCandidate.application_id, action)
               }
+              onUndoDecision={openUndoModal}
               contactedCandidates={contactedCandidates}
               markAsContacted={markAsContacted}
               activeStages={activeStages}
@@ -2608,6 +2708,19 @@ export function PipelineBoard() {
             isSubmitting={isSubmittingFeedback}
           />
         )}
+
+        {undoModalConfig.isOpen && undoModalConfig.candidate && (
+          <UndoConfirmModal
+            isOpen={undoModalConfig.isOpen}
+            onClose={() => setUndoModalConfig({ isOpen: false, candidate: null, isSubmitting: false })}
+            candidateName={undoModalConfig.candidate.full_name || undoModalConfig.candidate.student_name || "Candidate"}
+            jobTitle={undoModalConfig.candidate.job_title || "Position"}
+            currentDecision={isRejectedCandidate(undoModalConfig.candidate) ? "REJECTED" : "SELECTED"}
+            restorationStageName="Previous Pipeline Stage"
+            onConfirm={handleUndoConfirm}
+            isSubmitting={undoModalConfig.isSubmitting}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
@@ -2729,7 +2842,7 @@ function PipelineHeader({
           title="Shortlisted"
           value={
             applicants.filter(
-              (a: any) => a.status === "SHORTLISTED" || a.status === "SELECTED",
+              (a: any) => a.canonical_stage_key === "SHORTLISTED",
             ).length
           }
           icon={Target}
@@ -2737,7 +2850,13 @@ function PipelineHeader({
         />
         <KPICard
           title="In Interview"
-          value={applicants.filter((a: any) => a.status === "INTERVIEW" || a.status === "HR").length}
+          value={
+            applicants.filter(
+              (a: any) =>
+                a.canonical_stage_key === "INTERVIEW" ||
+                a.canonical_stage_key === "HR",
+            ).length
+          }
           icon={Calendar}
           color="orange"
         />
@@ -3145,6 +3264,7 @@ function CandidateQuickPreview({
   candidate,
   onClose,
   onAction,
+  onUndoDecision,
   isInline = false,
   contactedCandidates = {},
   markAsContacted,
@@ -3393,9 +3513,21 @@ function CandidateQuickPreview({
 
       {/* Footer Actions */}
       <div className="p-4 border-t border-slate-100 bg-white shrink-0 grid grid-cols-3 gap-3">
-        {isRejectedCandidate(candidate) ? (
-          <div className="col-span-3 text-center py-3 bg-rose-50 text-rose-600 rounded-xl font-extrabold uppercase tracking-widest text-[10px] select-none border border-rose-100">
-            Rejected
+        {isRejectedCandidate(candidate) || String(candidate.raw_status || candidate.status || "").toUpperCase() === "SELECTED" || String(candidate.status || "").toUpperCase() === "SHORTLISTED" ? (
+          <div className="col-span-3 flex items-center gap-2">
+            <div className={`flex-1 text-center py-2.5 rounded-xl font-extrabold uppercase tracking-widest text-[10px] select-none border ${isRejectedCandidate(candidate) ? "bg-rose-50 text-rose-600 border-rose-100" : "bg-emerald-50 text-emerald-600 border-emerald-100"}`}>
+              {isRejectedCandidate(candidate) ? "Rejected" : "Selected"}
+            </div>
+            {onUndoDecision && (
+              <button
+                type="button"
+                onClick={() => onUndoDecision(candidate)}
+                className="px-3.5 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors shadow-sm cursor-pointer flex items-center gap-1.5 shrink-0"
+                title="Undo decision and restore candidate to previous pipeline stage"
+              >
+                <RefreshCw size={13} /> Undo Decision
+              </button>
+            )}
           </div>
         ) : (
           <>

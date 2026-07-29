@@ -61,10 +61,10 @@ export function mapStageToCanonicalKey(app: any): {
   legacyKey: "applied" | "screening" | "assessment" | "interview" | "hr" | "selected" | "rejected";
 } {
   const statusUpper = String(app.status || app.app_status || "").toUpperCase();
-  const stageTypeUpper = String(app.current_stage_type || app.stage_type || "").toUpperCase();
-  const stageNameUpper = String(app.current_stage_name || app.stage_name || "").toUpperCase();
+  const stageTypeUpper = String(app.current_stage_type || app.stage_type || app.hist_stage_type || "").toUpperCase();
+  const stageNameUpper = String(app.current_stage_name || app.stage_name || app.hist_stage_name || "").toUpperCase();
 
-  // 1. Terminal Status
+  // 1. Terminal Status (First priority)
   if (statusUpper === "REJECTED" || statusUpper === "CANCELLED" || statusUpper === "WITHDRAWN") {
     return { key: "rejected", legacyKey: "rejected" };
   }
@@ -78,7 +78,7 @@ export function mapStageToCanonicalKey(app: any): {
     return { key: "selected", legacyKey: "selected" };
   }
 
-  // 2. Current Stage Type / Name
+  // 2. Current Stage Type / Name (or history stage type / name)
   if (stageTypeUpper) {
     if (stageTypeUpper === "APPLICATION" || stageTypeUpper === "APPLIED" || stageTypeUpper === "RESUME_REVIEW") {
       return { key: "applied", legacyKey: "applied" };
