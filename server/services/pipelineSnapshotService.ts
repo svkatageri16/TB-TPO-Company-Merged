@@ -148,7 +148,9 @@ export async function getPipelineSnapshot(
     minScore?: number;
   }
 ): Promise<PipelineSnapshot> {
-  const scopeVal: "all" | "active" | "ended" = options?.scope || "all";
+  const rawScope = String(options?.scope || "").toLowerCase();
+  const scopeVal: "all" | "active" | "ended" =
+    rawScope === "inactive" || rawScope === "ended" ? "ended" : rawScope === "all" ? "all" : "active";
   const targetJobId = options?.jobId ? Number(options.jobId) : null;
   const userId = options?.userId ? Number(options.userId) : null;
 

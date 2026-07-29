@@ -54,55 +54,112 @@ const PIPELINE_STAGES = [
   { id: "REJECTED", label: "REJECTED", color: "rose" },
 ];
 
-const STAGE_CONFIGS: Record<string, any> = {
+const STAGE_CONFIGS: Record<
+  string,
+  {
+    icon: any;
+    label: string;
+    color: string;
+    desc: string;
+    theme: {
+      iconBg: string;
+      border: string;
+      hover: string;
+      text: string;
+      bg: string;
+    };
+  }
+> = {
   APPLIED: {
-    color: "blue",
     icon: Briefcase,
     label: "Applied",
-    desc: "Newly received candidate applications awaiting review",
-    theme: { iconBg: "bg-blue-50 text-blue-600" },
+    color: "blue",
+    desc: "Candidates waiting for screening",
+    theme: {
+      iconBg: "bg-blue-50 text-blue-600",
+      border: "border-blue-100",
+      hover: "hover:border-blue-300",
+      text: "text-blue-700",
+      bg: "bg-blue-50/50",
+    },
   },
   SCREENING: {
-    color: "indigo",
     icon: Sparkles,
     label: "AI Screening",
-    desc: "Candidates evaluated by AI resume and profile matching",
-    theme: { iconBg: "bg-indigo-50 text-indigo-600" },
+    color: "indigo",
+    desc: "Candidates undergoing AI screening",
+    theme: {
+      iconBg: "bg-indigo-50 text-indigo-600",
+      border: "border-indigo-100",
+      hover: "hover:border-indigo-300",
+      text: "text-indigo-700",
+      bg: "bg-indigo-50/50",
+    },
   },
   TESTING: {
-    color: "purple",
-    icon: Clock,
+    icon: Target,
     label: "Assessment",
-    desc: "Online assessments and skill tests scheduled or complete",
-    theme: { iconBg: "bg-purple-50 text-purple-600" },
+    color: "purple",
+    desc: "Candidates in assessment stage",
+    theme: {
+      iconBg: "bg-purple-50 text-purple-600",
+      border: "border-purple-100",
+      hover: "hover:border-purple-300",
+      text: "text-purple-700",
+      bg: "bg-purple-50/50",
+    },
   },
   INTERVIEW: {
-    color: "orange",
-    icon: MessageSquare,
+    icon: PlayCircle,
     label: "Technical Interview",
-    desc: "Technical discussion and coding assessments",
-    theme: { iconBg: "bg-orange-50 text-orange-600" },
+    color: "orange",
+    desc: "Candidates in technical interview",
+    theme: {
+      iconBg: "bg-orange-50 text-orange-600",
+      border: "border-orange-100",
+      hover: "hover:border-orange-300",
+      text: "text-orange-700",
+      bg: "bg-orange-50/50",
+    },
   },
   HR: {
-    color: "pink",
-    icon: UserCheck,
+    icon: Users,
     label: "HR Interview",
-    desc: "Cultural fit and final HR evaluation",
-    theme: { iconBg: "bg-pink-50 text-pink-600" },
+    color: "pink",
+    desc: "Candidates in HR interview",
+    theme: {
+      iconBg: "bg-pink-50 text-pink-600",
+      border: "border-pink-100",
+      hover: "hover:border-pink-300",
+      text: "text-pink-700",
+      bg: "bg-pink-50/50",
+    },
   },
   SHORTLISTED: {
-    color: "emerald",
-    icon: Award,
+    icon: UserCheck,
     label: "Selected",
-    desc: "Selected candidates awaiting offer/onboarding",
-    theme: { iconBg: "bg-emerald-50 text-emerald-600" },
+    color: "emerald",
+    desc: "Candidates selected for offer",
+    theme: {
+      iconBg: "bg-emerald-50 text-emerald-600",
+      border: "border-emerald-100",
+      hover: "hover:border-emerald-300",
+      text: "text-emerald-700",
+      bg: "bg-emerald-50/50",
+    },
   },
   REJECTED: {
-    color: "rose",
     icon: XCircle,
     label: "REJECTED",
+    color: "rose",
     desc: "Candidates rejected across pipeline phases",
-    theme: { iconBg: "bg-rose-100 text-rose-600" },
+    theme: {
+      iconBg: "bg-rose-100 text-rose-600",
+      border: "border-rose-200",
+      hover: "hover:border-rose-300",
+      text: "text-rose-700",
+      bg: "bg-rose-50/50",
+    },
   },
 };
 
@@ -328,7 +385,7 @@ export function PipelineBoard() {
       }
 
       // Fetch canonical pipeline snapshot from backend
-      const scopeParam = pipelineFilter ? pipelineFilter.toLowerCase() : "active";
+      const scopeParam = pipelineFilter === 'inactive' ? 'ended' : pipelineFilter ? pipelineFilter.toLowerCase() : 'active';
       const jobParam = selectedJobId !== "ALL" ? selectedJobId : "";
       const snapshotUrl = `/analytics/pipeline/snapshot?scope=${scopeParam}&jobId=${jobParam}&searchQuery=${encodeURIComponent(searchQuery)}&minScore=${minScore}`;
 
@@ -785,102 +842,7 @@ export function PipelineBoard() {
     setDraggedAppId(null);
   };
 
-  // Stage configurations helper for Image 1 and Image 2 styles
-  const STAGE_CONFIGS: Record<
-    string,
-    {
-      icon: any;
-      label: string;
-      color: string;
-      desc: string;
-      theme: {
-        iconBg: string;
-        border: string;
-        hover: string;
-        text: string;
-        bg: string;
-      };
-    }
-  > = {
-    APPLIED: {
-      icon: Briefcase,
-      label: "Applied",
-      color: "blue",
-      desc: "Candidates waiting for screening",
-      theme: {
-        iconBg: "bg-blue-50 text-blue-600",
-        border: "border-blue-100",
-        hover: "hover:border-blue-300",
-        text: "text-blue-700",
-        bg: "bg-blue-50/50",
-      },
-    },
-    SCREENING: {
-      icon: Sparkles,
-      label: "AI Screening",
-      color: "indigo",
-      desc: "Candidates undergoing AI screening",
-      theme: {
-        iconBg: "bg-indigo-50 text-indigo-600",
-        border: "border-indigo-100",
-        hover: "hover:border-indigo-300",
-        text: "text-indigo-700",
-        bg: "bg-indigo-50/50",
-      },
-    },
-    TESTING: {
-      icon: Target,
-      label: "Assessment",
-      color: "purple",
-      desc: "Candidates in assessment stage",
-      theme: {
-        iconBg: "bg-purple-50 text-purple-600",
-        border: "border-purple-100",
-        hover: "hover:border-purple-300",
-        text: "text-purple-700",
-        bg: "bg-purple-50/50",
-      },
-    },
-    INTERVIEW: {
-      icon: PlayCircle,
-      label: "Technical Interview",
-      color: "orange",
-      desc: "Candidates in technical interview",
-      theme: {
-        iconBg: "bg-orange-50 text-orange-600",
-        border: "border-orange-100",
-        hover: "hover:border-orange-300",
-        text: "text-orange-700",
-        bg: "bg-orange-50/50",
-      },
-    },
-    HR: {
-      icon: Users,
-      label: "HR Interview",
-      color: "pink",
-      desc: "Candidates in HR interview",
-      theme: {
-        iconBg: "bg-pink-50 text-pink-600",
-        border: "border-pink-100",
-        hover: "hover:border-pink-300",
-        text: "text-pink-700",
-        bg: "bg-pink-50/50",
-      },
-    },
-    SHORTLISTED: {
-      icon: UserCheck,
-      label: "Selected",
-      color: "emerald",
-      desc: "Candidates selected for offer",
-      theme: {
-        iconBg: "bg-emerald-50 text-emerald-600",
-        border: "border-emerald-100",
-        hover: "hover:border-emerald-300",
-        text: "text-emerald-700",
-        bg: "bg-emerald-50/50",
-      },
-    },
-  };
+
 
   const getStageActionInfo = (candidate: any) => {
     const selectedJob = jobs.find((j: any) => j.id.toString() === selectedJobId);
@@ -2717,9 +2679,19 @@ function PipelineHeader({
 }: any) {
   const selectedJob = jobs.find((j: any) => j.id.toString() === selectedJobId);
 
+  const isJobActiveHeader = (j: any) => {
+    if (j.status === 'CLOSED' || j.ended_at || j.pipeline_ended_at) return false;
+    if (j.deadline) {
+      const dl = new Date(j.deadline).getTime();
+      if (!isNaN(dl) && dl < Date.now()) return false;
+    }
+    return j.status === 'OPEN';
+  };
+
   const filteredJobsForSelect = jobs.filter((j: any) => {
-    if (pipelineFilter === 'active') return j.status === 'OPEN';
-    if (pipelineFilter === 'inactive') return j.status === 'CLOSED';
+    const active = isJobActiveHeader(j);
+    if (pipelineFilter === 'active') return active;
+    if (pipelineFilter === 'inactive') return !active;
     return true;
   });
 

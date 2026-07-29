@@ -400,7 +400,9 @@ router.get("/pipeline/snapshot", authenticate, async (req: any, res) => {
       return res.status(400).json({ success: false, message: "Company profile not found" });
     }
 
-    const scope = (req.query.scope as "all" | "active" | "ended") || "all";
+    const rawScope = String(req.query.scope || "").toLowerCase();
+    const scope: "all" | "active" | "ended" =
+      rawScope === "inactive" || rawScope === "ended" ? "ended" : rawScope === "all" ? "all" : "active";
     const jobId = req.query.jobId && req.query.jobId !== "ALL" && req.query.jobId !== "all" ? Number(req.query.jobId) : undefined;
     const searchQuery = req.query.searchQuery ? String(req.query.searchQuery) : undefined;
     const minScore = req.query.minScore ? Number(req.query.minScore) : undefined;
