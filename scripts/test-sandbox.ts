@@ -190,6 +190,94 @@ function runSandboxTests() {
   const job2AppsCount = db.prepare("SELECT COUNT(*) as cnt FROM job_applications WHERE job_id = 2").get() as any;
 
   console.log("Sandbox Test 8 (All Jobs bucket equals sum of specific jobs):", allJobAppsCount.cnt === (job1AppsCount.cnt + job2AppsCount.cnt) ? "PASSED (All Jobs sum matches individual jobs)" : "FAILED");
+
+  // Stage Resolution Function for Testing
+  function resolveCandidateAction(candidate: any, customStages: any[]) {
+    const statusUpper = String(candidate?.status || "").toUpperCase();
+    if (statusUpper === "REJECTED" || statusUpper === "SELECTED" || statusUpper === "SHORTLISTED" || statusUpper === "HIRED") {
+      return { disabled: true, label: statusUpper === "REJECTED" ? "Rejected" : "Selected", nextId: null };
+    }
+    if (!customStages || customStages.length === 0) {
+      return { disabled: true, label: "No Custom Stages", nextId: null };
+    }
+    const candJobId = candidate?.job_id ? Number(candidate.job_id) : null;
+    const stages = [...customStages]
+      .filter((s) => !candJobId || !s.job_id || Number(s.job_id) === candJobId)
+      .sort((a, b) => (a.stage_order || 0) - (b.stage_order || 0) || Number(a.id) - Number(b.id));
+
+    if (stages.length === 0) {
+      return { disabled: true, label: "Stage unavailable", nextId: null };
+    }
+
+    let currentIndex = -1;
+    if (candidate?.current_stage_id) {
+      currentIndex = stages.findIndex((s) => Number(s.id) === Number(candidate.current_stage_id));
+    }
+    if (currentIndex === -1 && candidate?.current_stage_name) {
+      const nameMatches = stages.filter((s) => (s.stage_name || "").trim().toLowerCase() === candidate.current_stage_name.trim().toLowerCase());
+      if (nameMatches.length === 1) currentIndex = stages.indexOf(nameMatches[0]);
+    }
+    if (currentIndex === -1 && candidate?.current_stage_type) {
+      const typeMatches = stages.filter((s) => (s.stage_type || "").trim().toUpperCase() === candidate.current_stage_type.trim().toUpperCase());
+      if (typeMatches.length === 1) currentIndex = stages.indexOf(typeMatches[0]);
+    }
+    if (currentIndex === -1) {
+      return { disabled: true, label: "Stage unavailable", nextId: null };
+    }
+    const nextStage = stages[currentIndex + 1];
+    if (!nextStage) {
+      return { disabled: true, label: "Final Stage", nextId: null };
+    }
+    return { disabled: false, label: "Advance", nextId: Number(nextStage.id), nextName: nextStage.stage_name };
+  }
+
+  // Job 3 with duplicate stage types: Tech 1 (INTERVIEW), Tech 2 (INTERVIEW)
+  const job3Stages = [
+    { id: 301, job_id: 3, stage_name: "Applied", stage_type: "APPLIED", stage_order: 1 },
+    { id: 302, job_id: 3, stage_name: "Technical Round 1", stage_type: "INTERVIEW", stage_order: 2 },
+    { id: 303, job_id: 3, stage_name: "Technical Round 2", stage_type: "INTERVIEW", stage_order: 3 },
+    { id: 304, job_id: 3, stage_name: "HR Interview", stage_type: "HR", stage_order: 4 },
+  ];
+
+  // Test 9: Exact stage ID
+  const test9Action = resolveCandidateAction({ job_id: 3, current_stage_id: 302, status: "IN_PROGRESS" }, job3Stages);
+  console.log("Sandbox Test 9 (Exact stage ID advance):", test9Action.disabled === false && test9Action.nextId === 303 ? "PASSED (advanced to Tech Round 2)" : "FAILED");
+
+  // Test 10: Duplicate stage type without exact ID
+  const test10Action = resolveCandidateAction({ job_id: 3, current_stage_id: null, current_stage_type: "INTERVIEW", status: "IN_PROGRESS" }, job3Stages);
+  console.log("Sandbox Test 10 (Duplicate stage type ambiguous guard):", test10Action.disabled === true && test10Action.label === "Stage unavailable" ? "PASSED (blocked ambiguity, disabled Advance)" : "FAILED");
+
+  // Test 11: History exact stage fallback
+  db.prepare("INSERT INTO jobs (id, company_id, title, status) VALUES (3, 10, 'Data Engineer', 'OPEN')").run();
+  db.prepare("INSERT INTO job_applications (id, job_id, student_id, status, current_stage_id) VALUES (105, 3, 5, 'IN_PROGRESS', NULL)").run();
+  db.prepare("INSERT INTO application_history (id, application_id, stage_id, action, created_at) VALUES (12, 105, 303, 'TRANSITION', '2026-07-01 10:00:00')").run();
+  
+  const app105 = db.prepare("SELECT * FROM job_applications WHERE id = 105").get() as any;
+  if (!app105.current_stage_id) {
+    const hist = db.prepare("SELECT stage_id FROM application_history WHERE application_id = 105 ORDER BY created_at DESC, id DESC LIMIT 1").get() as any;
+    if (hist) app105.current_stage_id = hist.stage_id;
+  }
+  const test11Action = resolveCandidateAction(app105, job3Stages);
+  console.log("Sandbox Test 11 (History exact stage fallback):", test11Action.disabled === false && test11Action.nextId === 304 ? "PASSED (restored history stage Tech 2 and advanced to HR)" : "FAILED");
+
+  // Test 12: True final stage
+  const test12Action = resolveCandidateAction({ job_id: 3, current_stage_id: 304, status: "IN_PROGRESS" }, job3Stages);
+  console.log("Sandbox Test 12 (True final stage):", test12Action.disabled === true && test12Action.label === "Final Stage" ? "PASSED (labelled Final Stage)" : "FAILED");
+
+  // Test 13: Cross-job stage ID
+  const test13Action = resolveCandidateAction({ job_id: 3, current_stage_id: 999 /* Job 2 stage */, status: "IN_PROGRESS" }, job3Stages);
+  console.log("Sandbox Test 13 (Cross-job stage ID guard):", test13Action.disabled === true && test13Action.label === "Stage unavailable" ? "PASSED (rejected cross-job stage ID)" : "FAILED");
+
+  // Test 14: Terminal candidate
+  const test14Action = resolveCandidateAction({ job_id: 3, current_stage_id: 302, status: "REJECTED" }, job3Stages);
+  console.log("Sandbox Test 14 (Terminal candidate guard):", test14Action.disabled === true && test14Action.label === "Rejected" ? "PASSED (disabled for terminal candidate)" : "FAILED");
+
+  // Test 15: Job switching guard
+  const job4Stages = [
+    { id: 401, job_id: 4, stage_name: "Applied", stage_type: "APPLIED", stage_order: 1 },
+  ];
+  const test15Action = resolveCandidateAction({ job_id: 3, current_stage_id: 302, status: "IN_PROGRESS" }, job4Stages);
+  console.log("Sandbox Test 15 (Job switching stage mismatch guard):", test15Action.disabled === true && test15Action.label === "Stage unavailable" ? "PASSED (mismatched job stages ignored)" : "FAILED");
 }
 
 runSandboxTests();

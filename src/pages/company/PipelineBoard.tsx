@@ -51,7 +51,7 @@ const PIPELINE_STAGES = [
   { id: "INTERVIEW", label: "Technical Interview", color: "orange" },
   { id: "HR", label: "HR Interview", color: "pink" },
   { id: "SHORTLISTED", label: "Selected", color: "emerald" },
-  { id: "REJECTED", label: "Rejected", color: "rose" },
+  { id: "REJECTED", label: "REJECTED", color: "rose" },
 ];
 
 const STAGE_CONFIGS: Record<string, any> = {
@@ -100,9 +100,9 @@ const STAGE_CONFIGS: Record<string, any> = {
   REJECTED: {
     color: "rose",
     icon: XCircle,
-    label: "Rejected",
-    desc: "Candidates dropped or rejected at any stage",
-    theme: { iconBg: "bg-rose-50 text-rose-600" },
+    label: "REJECTED",
+    desc: "Candidates rejected across pipeline phases",
+    theme: { iconBg: "bg-rose-100 text-rose-600" },
   },
 };
 
@@ -893,12 +893,19 @@ export function PipelineBoard() {
       };
     }
 
-    if (isRejectedCandidate(candidate)) {
+    const statusUpper = String(candidate?.status || candidate?.app_status || "").toUpperCase();
+    const isTerminal =
+      isRejectedCandidate(candidate) ||
+      ["SELECTED", "SHORTLISTED", "HIRED", "OFFER_ACCEPTED", "WITHDRAWN", "CANCELLED", "VERIFIED_SELECTION"].includes(statusUpper) ||
+      candidate?.canonical_stage_key === "SHORTLISTED" ||
+      candidate?.canonical_stage_key === "REJECTED";
+
+    if (isTerminal) {
       return {
         disabled: true,
-        label: "Rejected",
+        label: isRejectedCandidate(candidate) ? "Rejected" : "Selected",
         nextId: null,
-        reason: "Candidate has been rejected.",
+        reason: "Candidate is in a terminal stage.",
       };
     }
 
@@ -921,25 +928,74 @@ export function PipelineBoard() {
       };
     }
 
-    const stages = [...customStages].sort(
-      (a, b) => (a.stage_order || 0) - (b.stage_order || 0),
-    );
+    // Filter and sort custom stages deterministically by stage_order ASC, id ASC
+    const candJobId = candidate?.job_id ? Number(candidate.job_id) : (selectedJobId !== "ALL" ? Number(selectedJobId) : null);
+    const stages = [...customStages]
+      .filter((s) => !candJobId || !s.job_id || Number(s.job_id) === candJobId)
+      .sort(
+        (a, b) => (a.stage_order || 0) - (b.stage_order || 0) || Number(a.id) - Number(b.id),
+      );
 
-    // Find current stage by comparing Number(stage.id) === Number(candidate.current_stage_id)
-    let currentIndex = stages.findIndex(
-      (s) => Number(s.id) === Number(candidate?.current_stage_id),
-    );
+    if (stages.length === 0) {
+      return {
+        disabled: true,
+        label: "Stage unavailable",
+        nextId: null,
+        reason: "Custom stages do not match candidate job.",
+      };
+    }
 
-    // Fallback: search by candidate.status matching the stage id
-    if (currentIndex === -1 && candidate?.status) {
+    let currentIndex = -1;
+
+    // 1. Exact current_stage_id match (verify stage belongs to candidate's job)
+    if (candidate?.current_stage_id) {
       currentIndex = stages.findIndex(
-        (s) => s.id.toString() === candidate.status.toString(),
+        (s) => Number(s.id) === Number(candidate.current_stage_id),
       );
     }
 
-    // Default to first stage if not bound or candidate just applied
+    // 2. Exact current_stage_name match ONLY when exactly ONE stage in that job has that name
+    if (currentIndex === -1 && candidate?.current_stage_name) {
+      const targetName = candidate.current_stage_name.trim().toLowerCase();
+      const nameMatches = stages.filter(
+        (s) => (s.stage_name || "").trim().toLowerCase() === targetName,
+      );
+      if (nameMatches.length === 1) {
+        currentIndex = stages.indexOf(nameMatches[0]);
+      }
+    }
+
+    // 3. Stage type fallback ONLY when exactly ONE stage in that job matches that type
+    if (currentIndex === -1 && candidate?.current_stage_type) {
+      const targetType = candidate.current_stage_type.trim().toUpperCase();
+      const typeMatches = stages.filter(
+        (s) => (s.stage_type || "").trim().toUpperCase() === targetType,
+      );
+      if (typeMatches.length === 1) {
+        currentIndex = stages.indexOf(typeMatches[0]);
+      }
+    }
+
+    // 4. If exact current stage cannot be resolved, DO NOT guess, DO NOT default to index 0, DO NOT display Final Stage
     if (currentIndex === -1) {
-      currentIndex = 0;
+      const matchingStageIds = stages.map((s) => Number(s.id));
+      console.warn("[Pipeline] Stage resolution ambiguous/unresolved:", {
+        application_id: candidate?.application_id || candidate?.id,
+        job_id: candidate?.job_id || selectedJobId,
+        current_stage_id: candidate?.current_stage_id,
+        current_stage_type: candidate?.current_stage_type,
+        current_stage_name: candidate?.current_stage_name,
+        canonical_stage_key: candidate?.canonical_stage_key,
+        matching_stage_ids: matchingStageIds,
+        reason: "Unable to resolve unique current stage for candidate in this job.",
+      });
+
+      return {
+        disabled: true,
+        label: "Stage unavailable",
+        nextId: null,
+        reason: "Unable to resolve unique current stage for candidate in this job.",
+      };
     }
 
     const nextStage = stages[currentIndex + 1];
@@ -1502,14 +1558,14 @@ export function PipelineBoard() {
                             Avg Match Score
                           </span>
                           <span
-                            className={`text-xs font-black ${avgScore >= 80 ? "text-emerald-600" : avgScore >= 60 ? "text-blue-600" : "text-slate-700"}`}
+                            className={`text-xs font-black ${isRose ? "text-rose-700" : avgScore >= 80 ? "text-emerald-600" : avgScore >= 60 ? "text-blue-600" : "text-slate-700"}`}
                           >
                             {avgScore > 0 ? `${avgScore}%` : "—"}
                           </span>
                         </div>
                         <div>
                           <span className="block text-[8px] font-black uppercase text-slate-400 tracking-wider mb-0.5">
-                            {stage.id === "REJECTED" ? "Newest Rejection" : "Newest Application"}
+                            {stage.id === "REJECTED" ? "NEWEST REJECTION" : "Newest Application"}
                           </span>
                           <span className="text-xs font-bold text-slate-700">
                             {newestDate

@@ -237,6 +237,31 @@ export async function getPipelineSnapshot(
   const [rows]: any = await db.query(sql, params);
   const rawApps = rows || [];
 
+  // 2b. Fallback: resolve current_stage_id from application_history if missing or invalid
+  for (const app of rawApps) {
+    if (!app.current_stage_id || !app.current_stage_name) {
+      try {
+        const [hist]: any = await db.query(
+          `SELECT ah.stage_id, js.stage_name, js.stage_type, js.stage_order, js.job_id
+           FROM application_history ah
+           JOIN job_stages js ON ah.stage_id = js.id
+           WHERE ah.application_id = ? AND js.job_id = ?
+           ORDER BY ah.created_at DESC, ah.id DESC
+           LIMIT 1`,
+          [app.application_id, app.job_id]
+        );
+        if (hist && hist.length > 0) {
+          app.current_stage_id = hist[0].stage_id;
+          app.current_stage_name = hist[0].stage_name;
+          app.current_stage_type = hist[0].stage_type;
+          app.current_stage_order = hist[0].stage_order;
+        }
+      } catch (err) {
+        // Safe fallback ignoring error if history table is absent
+      }
+    }
+  }
+
   // 3. Filter by Sub HR assignments, lifecycle scope, search query, minScore
   const filteredApps = rawApps.filter((a: any) => {
     // Sub HR scoping
