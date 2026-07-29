@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import api from '../../services/api.ts';
 import { 
@@ -64,8 +64,13 @@ export function InterviewCenter() {
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [applicants, setApplicants] = useState<any[]>([]);
   const [loadingApplicants, setLoadingApplicants] = useState(false);
+  const [candidateSearchQuery, setCandidateSearchQuery] = useState('');
+  const [candidateError, setCandidateError] = useState<string | null>(null);
+  const reqSeqRef = useRef(0);
   
   // Schedule Form fields
+  const [jobsOptions, setJobsOptions] = useState<any[]>([]);
+  const [selectedJobId, setSelectedJobId] = useState<string>('');
   const [selectedAppId, setSelectedAppId] = useState('');
   const [scheduledAt, setScheduledAt] = useState('');
   const [notes, setNotes] = useState('');
@@ -113,18 +118,111 @@ export function InterviewCenter() {
 
   const fetchApplicants = async () => {
     if (!user?.id) return;
+    const currentSeq = ++reqSeqRef.current;
     try {
       setLoadingApplicants(true);
+      setCandidateError(null);
       const res = await api.get(`/analytics/employer/${user?.id}`);
+      if (currentSeq !== reqSeqRef.current) return;
       if (res.data.success) {
-        setApplicants(res.data.data.applicants || []);
+        const fetchedApps = res.data.data.applicants || [];
+        setApplicants(fetchedApps);
+
+        const fetchedJobs = res.data.data.filterOptions?.jobs || [];
+        if (fetchedJobs.length > 0) {
+          setJobsOptions(fetchedJobs);
+        } else {
+          const map = new Map<string, any>();
+          fetchedApps.forEach((a: any) => {
+            if (a.job_id && !map.has(String(a.job_id))) {
+              map.set(String(a.job_id), {
+                id: a.job_id,
+                title: a.job_title || `Job #${a.job_id}`,
+                status: a.job_status || 'OPEN'
+              });
+            }
+          });
+          setJobsOptions(Array.from(map.values()));
+        }
+      } else {
+        setCandidateError("Unable to load eligible candidates. Please retry.");
       }
     } catch (e) {
       console.error("Error loading company applicants:", e);
+      if (currentSeq === reqSeqRef.current) {
+        setCandidateError("Unable to load eligible candidates. Please retry.");
+      }
     } finally {
-      setLoadingApplicants(false);
+      if (currentSeq === reqSeqRef.current) {
+        setLoadingApplicants(false);
+      }
     }
   };
+
+  const getCandidateStageName = (app: any) => {
+    if (app.current_stage_name && app.current_stage_name.trim()) {
+      return app.current_stage_name.trim();
+    }
+    const keyUpper = String(app.canonical_stage_key || '').toUpperCase();
+    if (keyUpper.includes('HR')) {
+      return 'HR Interview';
+    }
+    return 'Technical Interview';
+  };
+
+  const getCandidateLabel = (app: any) => {
+    return `${app.full_name} — ${getCandidateStageName(app)}`;
+  };
+
+  const isInterviewPhase = (app: any) => {
+    if (!app) return false;
+    
+    const statusUpper = String(app.status || '').toUpperCase();
+    if (['REJECTED', 'CANCELLED', 'WITHDRAWN', 'SELECTED', 'HIRED', 'OFFER', 'OFFER_ACCEPTED', 'SHORTLISTED'].includes(statusUpper)) {
+      return false;
+    }
+
+    const keyUpper = String(app.canonical_stage_key || '').toUpperCase();
+    if (['TECHNICALINTERVIEW', 'HRINTERVIEW', 'INTERVIEW', 'HR'].includes(keyUpper)) {
+      return true;
+    }
+
+    const stageTypeUpper = String(app.current_stage_type || app.stage_type || '').toUpperCase();
+    if (['INTERVIEW', 'TECHNICAL_INTERVIEW', 'HR', 'HR_INTERVIEW', 'INTERVIEW_ONLINE'].includes(stageTypeUpper)) {
+      return true;
+    }
+
+    const stageNameUpper = String(app.current_stage_name || app.stage_name || '').toUpperCase();
+    if (stageNameUpper.includes('INTERVIEW') || stageNameUpper.includes('HR')) {
+      if (!['APPLICATION', 'APPLIED', 'SCREENING', 'AI_SCREENING', 'TEST', 'ASSESSMENT'].includes(stageTypeUpper)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const handleJobChange = (newJobId: string) => {
+    setSelectedJobId(newJobId);
+    setSelectedAppId('');
+    setCandidateSearchQuery('');
+    setCandidateError(null);
+  };
+
+  const eligibleCandidatesForJob = applicants.filter((app) => {
+    if (!selectedJobId) return false;
+    const isSameJob = String(app.job_id) === String(selectedJobId);
+    return isSameJob && isInterviewPhase(app);
+  });
+
+  const searchedCandidatesForJob = eligibleCandidatesForJob.filter((app) => {
+    if (!candidateSearchQuery.trim()) return true;
+    const q = candidateSearchQuery.toLowerCase().trim();
+    const nameMatch = app.full_name && app.full_name.toLowerCase().includes(q);
+    const emailMatch = app.email && app.email.toLowerCase().includes(q);
+    const stageMatch = getCandidateStageName(app).toLowerCase().includes(q);
+    return nameMatch || emailMatch || stageMatch;
+  });
 
   const handleAddAttendeeField = () => {
     setAttendees([...attendees, { name: '', email: '', role: 'Panelist' }]);
@@ -142,6 +240,10 @@ export function InterviewCenter() {
 
   const handleScheduleInterview = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedJobId) {
+      toast.error('Please select a job requirement first');
+      return;
+    }
     if (!selectedAppId) {
       toast.error('Please select a candidate');
       return;
@@ -151,9 +253,9 @@ export function InterviewCenter() {
       return;
     }
 
-    const selectedApp = applicants.find(app => String(app.application_id) === String(selectedAppId));
+    const selectedApp = eligibleCandidatesForJob.find(app => String(app.application_id) === String(selectedAppId));
     if (!selectedApp) {
-      toast.error('Selected candidate application could not be verified');
+      toast.error('Selected candidate application could not be verified for this job');
       return;
     }
 
@@ -183,6 +285,7 @@ export function InterviewCenter() {
     try {
       setScheduling(true);
       const res = await api.post('/jobs/applications/schedule-interview', {
+        jobId: Number(selectedJobId),
         applicationId: Number(selectedAppId),
         stageId: selectedApp.current_stage_id || 1, 
         interviewType: scheduledType,
@@ -203,6 +306,7 @@ export function InterviewCenter() {
         setShowScheduleModal(false);
         
         // Reset form
+        setSelectedJobId('');
         setSelectedAppId('');
         setScheduledAt('');
         setNotes('');
@@ -655,24 +759,84 @@ export function InterviewCenter() {
               </div>
 
               <form onSubmit={handleScheduleInterview} className="space-y-5 text-left">
-                {/* Select Applicant Dropdown */}
+                {/* 1. Select Job Dropdown */}
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Choose Candidate / Applicant</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block font-bold">1. Select Job Requirement</label>
                   <select 
-                    value={selectedAppId}
-                    onChange={(e) => setSelectedAppId(e.target.value)}
+                    value={selectedJobId}
+                    onChange={(e) => handleJobChange(e.target.value)}
                     required
-                    className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-xs font-bold text-slate-700 outline-none focus:ring-4 focus:ring-blue-150 transition-all uppercase"
+                    className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-xs font-bold text-slate-700 outline-none focus:ring-4 focus:ring-blue-150 transition-all uppercase cursor-pointer"
                   >
-                    <option value="">-- SELECT CANDIDATE --</option>
-                    {applicants.map((app) => (
-                      <option key={app.application_id} value={app.application_id}>
-                        {app.full_name} / {app.job_title} ({app.status})
+                    <option value="">-- SELECT JOB REQUIREMENT --</option>
+                    {jobsOptions.map((job) => (
+                      <option key={job.id} value={job.id}>
+                        {job.title} {job.status ? `(${job.status})` : ''}
                       </option>
                     ))}
                   </select>
-                  {applicants.length === 0 && !loadingApplicants && (
-                    <p className="text-[10px] text-amber-600 font-medium">⚠️ No applicants available to schedule. Post jobs and receive candidates first!</p>
+                  {jobsOptions.length === 0 && !loadingApplicants && (
+                    <p className="text-[10px] text-amber-600 font-medium">⚠️ No job postings available. Post jobs first!</p>
+                  )}
+                </div>
+
+                {/* 2. Select Eligible Candidate Dropdown */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block font-bold">2. Select Eligible Candidate</label>
+                  
+                  {!selectedJobId ? (
+                    <div className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-xs font-bold text-slate-400 uppercase cursor-not-allowed">
+                      Select a job first
+                    </div>
+                  ) : candidateError ? (
+                    <div className="p-4 bg-red-50 border border-red-100 rounded-2xl space-y-2">
+                      <p className="text-xs font-bold text-red-600">Unable to load eligible candidates. Please retry.</p>
+                      <button 
+                        type="button" 
+                        onClick={fetchApplicants}
+                        className="px-3 py-1 bg-red-600 text-white text-[10px] font-bold rounded-lg uppercase tracking-wider"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ) : loadingApplicants ? (
+                    <div className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-xs font-bold text-slate-400 uppercase">
+                      Loading eligible candidates...
+                    </div>
+                  ) : eligibleCandidatesForJob.length === 0 ? (
+                    <div className="w-full bg-amber-50 border border-amber-100 rounded-2xl px-5 py-4 text-xs font-bold text-amber-700 uppercase">
+                      No candidates are currently in an interview stage for this job.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <input 
+                        type="text"
+                        placeholder="Search candidate by name, email, stage..."
+                        value={candidateSearchQuery}
+                        onChange={(e) => setCandidateSearchQuery(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-3 text-xs font-medium text-slate-800 outline-none focus:ring-4 focus:ring-blue-150 transition-all placeholder:text-slate-400"
+                      />
+
+                      {searchedCandidatesForJob.length === 0 ? (
+                        <div className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-xs font-bold text-slate-500 uppercase">
+                          No matching interview-stage candidates found.
+                        </div>
+                      ) : (
+                        <select 
+                          value={selectedAppId}
+                          onChange={(e) => setSelectedAppId(e.target.value)}
+                          required
+                          className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-xs font-bold text-slate-700 outline-none focus:ring-4 focus:ring-blue-150 transition-all uppercase cursor-pointer"
+                        >
+                          <option value="">-- SELECT CANDIDATE --</option>
+                          {searchedCandidatesForJob.map((app) => (
+                            <option key={app.application_id} value={app.application_id}>
+                              {getCandidateLabel(app)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
                   )}
                 </div>
 

@@ -1075,25 +1075,106 @@ router.post("/applications/submit-test", async (req, res) => {
 
 // Schedule Interview
 router.post("/applications/schedule-interview", authenticate, async (req: any, res) => {
-  let { applicationId, stageId, interviewType, locationOrLink, scheduledAt, notes, attendees, schedulerHrName } = req.body;
+  let { jobId: submittedJobId, applicationId, stageId, interviewType, locationOrLink, scheduledAt, notes, attendees, schedulerHrName } = req.body;
   const appId = Number(applicationId);
   let stgId = Number(stageId);
   try {
-     // Verify the application exists and get its job_id
+     // 1. Authenticate user & resolve company context
+     const ctx = await resolveCompanyContext(req);
+     if (ctx.error) {
+        return res.status(ctx.statusCode || 401).json({ success: false, message: ctx.error });
+     }
+
+     // 2. Verify application exists and get job, company, student, stage info
      const [apps]: any = await db.query(`
-       SELECT ja.job_id, ja.current_stage_id, j.title as job_title, j.company_id, cp.company_name, cp.contact_person, sp.full_name as candidate_name, sp.email as candidate_email, sp.user_id as user_id
+       SELECT 
+         ja.id as application_id,
+         ja.job_id, 
+         ja.student_id,
+         ja.status as app_status,
+         ja.current_stage_id, 
+         j.title as job_title, 
+         j.company_id as job_company_id, 
+         cp.company_name, 
+         cp.contact_person, 
+         sp.full_name as candidate_name, 
+         sp.email as candidate_email, 
+         sp.user_id as user_id,
+         js.stage_name as current_stage_name,
+         js.stage_type as current_stage_type
        FROM job_applications ja
        JOIN jobs j ON ja.job_id = j.id
-       JOIN company_profiles cp ON j.company_id = cp.id
-       JOIN student_profiles sp ON ja.student_id = sp.id
+       LEFT JOIN company_profiles cp ON j.company_id = cp.id
+       LEFT JOIN student_profiles sp ON ja.student_id = sp.id
+       LEFT JOIN job_stages js ON ja.current_stage_id = js.id
        WHERE ja.id = ?
      `, [appId]);
 
-     if (apps.length === 0) {
+     if (!apps || apps.length === 0) {
         return res.status(404).json({ success: false, message: "Application not found" });
      }
      const appData = apps[0];
-     const jobId = appData.job_id;
+     const authoritativeJobId = appData.job_id;
+
+     // 3. Verify application belongs to submitted jobId (if provided)
+     if (submittedJobId && Number(submittedJobId) !== Number(authoritativeJobId)) {
+        return res.status(400).json({ success: false, message: "Application does not belong to the selected job requirement." });
+     }
+
+     // 4. Verify job belongs to authenticated company
+     if (Number(appData.job_company_id) !== Number(ctx.companyId)) {
+        return res.status(403).json({ success: false, message: "Forbidden: Application belongs to a different company." });
+     }
+
+     // 5. Sub HR access control
+     if (ctx.roleType === 'SUB_HR') {
+        const [jobAssigns]: any = await db.query(
+          "SELECT id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND job_id = ?",
+          [ctx.companyId, req.user.userId, authoritativeJobId]
+        );
+        const [appAssigns]: any = await db.query(
+          "SELECT id FROM company_application_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND application_id = ?",
+          [ctx.companyId, req.user.userId, appId]
+        );
+        if (jobAssigns.length === 0 && appAssigns.length === 0) {
+          return res.status(403).json({ success: false, message: "Forbidden: You are not assigned to manage this job or application." });
+        }
+     }
+
+     // 6. Verify current canonical application phase is INTERVIEW or HR & not in terminal state
+     const mapped = mapStageToCanonicalKey(appData);
+     const isEligiblePhase = mapped.key === 'technicalInterview' || mapped.key === 'hrInterview' || mapped.legacyKey === 'interview' || mapped.legacyKey === 'hr';
+     
+     const statusUpper = String(appData.app_status || '').toUpperCase();
+     const isTerminalStatus = ['SELECTED', 'REJECTED', 'HIRED', 'OFFER_ACCEPTED', 'OFFER', 'WITHDRAWN', 'CANCELLED', 'SHORTLISTED'].includes(statusUpper);
+
+     if (!isEligiblePhase || isTerminalStatus) {
+        return res.status(409).json({ success: false, message: "The selected candidate is no longer eligible for interview scheduling." });
+     }
+
+     // 7. Verify stageId if provided
+     if (stgId) {
+        const [stages]: any = await db.query("SELECT id, job_id FROM job_stages WHERE id = ?", [stgId]);
+        if (stages.length === 0 || Number(stages[0].job_id) !== Number(authoritativeJobId)) {
+           return res.status(400).json({ success: false, message: "Selected stage does not belong to this job requirement." });
+        }
+     } else {
+        if (appData.current_stage_id) {
+           stgId = Number(appData.current_stage_id);
+        } else {
+           const [jobStages]: any = await db.query("SELECT id FROM job_stages WHERE job_id = ? ORDER BY stage_order ASC LIMIT 1", [authoritativeJobId]);
+           if (jobStages.length > 0) {
+              stgId = Number(jobStages[0].id);
+           } else {
+              const [newStage]: any = await db.query(
+                "INSERT INTO job_stages (job_id, stage_name, stage_type, stage_order) VALUES (?, 'Interview', 'INTERVIEW', 1)",
+                [authoritativeJobId]
+              );
+              stgId = Number((newStage.insertId !== undefined) ? newStage.insertId : newStage[0]?.insertId);
+              await db.query("UPDATE job_applications SET current_stage_id = ? WHERE id = ?", [stgId, appId]);
+           }
+        }
+     }
 
      // In-person location validation
      if (interviewType === 'In-Person' || req.body.mode === 'Offline Interview' || locationOrLink === 'Offline Interview' || req.body.mode === 'In-Person Interview') {
@@ -1101,25 +1182,6 @@ router.post("/applications/schedule-interview", authenticate, async (req: any, r
            return res.status(400).json({ success: false, message: "Location is required for In-Person interviews." });
         }
         locationOrLink = req.body.location.trim();
-     }
-
-     // Ensure stageId is valid
-     const [stages]: any = await db.query("SELECT id FROM job_stages WHERE id = ?", [stgId]);
-     if (stages.length === 0) {
-        // Find any existing stage for this job
-        const [jobStages]: any = await db.query("SELECT id FROM job_stages WHERE job_id = ? ORDER BY stage_order ASC LIMIT 1", [jobId]);
-        if (jobStages.length > 0) {
-           stgId = Number(jobStages[0].id);
-        } else {
-           // Create a default stage
-           const [newStage]: any = await db.query(
-             "INSERT INTO job_stages (job_id, stage_name, stage_type, stage_order) VALUES (?, 'Interview', 'INTERVIEW', 1)",
-             [jobId]
-           );
-           stgId = Number((newStage.insertId !== undefined) ? newStage.insertId : newStage[0]?.insertId);
-           // Update application to this stage
-           await db.query("UPDATE job_applications SET current_stage_id = ? WHERE id = ?", [stgId, appId]);
-        }
      }
 
      let formattedScheduledAt = null;
