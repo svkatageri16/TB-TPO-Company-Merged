@@ -2,6 +2,7 @@ import express from "express";
 import db from "../db.ts";
 import { sendEmail, sendInterviewInvitationToAttendee } from "../services/emailService.ts";
 import { authenticate } from "../middleware/auth.ts";
+import { mapStageToCanonicalKey } from "../services/pipelineSnapshotService.ts";
 import { checkAndProcessJobExpirations } from "../services/jobExpiryService.ts";
 import { processJobEnding, isJobActive, isJobEnded } from "../services/jobLifecycleService.ts";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -1550,7 +1551,27 @@ router.post("/update-stage", authenticate, async (req: any, res) => {
         }
       }
 
-      return res.json({ success: true, message: "Application rejected successfully." });
+      // Re-query committed application state for authoritative response
+      const [committedRejApps]: any = await db.query(`
+        SELECT JA.*, JS.stage_name, JS.stage_type
+        FROM job_applications JA
+        LEFT JOIN job_stages JS ON JA.current_stage_id = JS.id
+        WHERE JA.id = ?
+      `, [applicationId]);
+      const committedRejApp = committedRejApps[0] || {};
+      const rejMapped = mapStageToCanonicalKey({
+        status: committedRejApp.status || 'REJECTED',
+        stage_type: committedRejApp.stage_type,
+        stage_name: committedRejApp.stage_name
+      });
+
+      return res.json({
+        success: true,
+        message: "Application rejected successfully.",
+        application: committedRejApp,
+        canonicalStageKey: rejMapped.key,
+        legacyCanonicalKey: rejMapped.legacyKey
+      });
     }
 
     let status = 'IN_PROGRESS';
@@ -1558,11 +1579,44 @@ router.post("/update-stage", authenticate, async (req: any, res) => {
       status = 'SELECTED';
     }
 
-    await db.query(`
+    // Verify stage belongs to candidate's job & ordered stage progression
+    if (stageId) {
+      const [stageRows]: any = await db.query(
+        "SELECT id, stage_name, stage_type, stage_order FROM job_stages WHERE id = ? AND job_id = ?",
+        [stageId, app.job_id]
+      );
+      if (!stageRows || stageRows.length === 0) {
+        return res.status(400).json({ success: false, message: "Target stage does not belong to this job's pipeline." });
+      }
+
+      // Enforce valid next stage progression for non-terminal moves
+      if (action !== 'SELECTED' && action !== 'REJECTED') {
+        const [jobStages]: any = await db.query(
+          "SELECT id, stage_name, stage_type, stage_order FROM job_stages WHERE job_id = ? ORDER BY stage_order ASC, id ASC",
+          [app.job_id]
+        );
+        const curIdx = jobStages.findIndex((s: any) => Number(s.id) === Number(app.current_stage_id));
+        if (curIdx !== -1) {
+          const expectedNext = jobStages[curIdx + 1];
+          if (!expectedNext) {
+            return res.status(400).json({ success: false, message: "Candidate is already at the final stage." });
+          }
+          if (Number(stageId) !== Number(expectedNext.id)) {
+            return res.status(400).json({ success: false, message: "Invalid stage progression: Target stage is not the valid next stage." });
+          }
+        }
+      }
+    }
+
+    const [updateRes]: any = await db.query(`
       UPDATE job_applications 
       SET current_stage_id = ?, status = ?
-      WHERE id = ?
+      WHERE id = ? AND status NOT IN ('REJECTED', 'CANCELLED', 'WITHDRAWN')
     `, [stageId, status, applicationId]);
+
+    if (!updateRes || updateRes.affectedRows === 0) {
+      return res.status(409).json({ success: false, message: "Application could not be updated or is in a terminal state." });
+    }
 
     const historyNotes = feedback !== undefined && feedback !== null ? feedback : notes;
 
@@ -1639,7 +1693,27 @@ router.post("/update-stage", authenticate, async (req: any, res) => {
       });
     }
 
-    res.json({ success: true, message: "Stage updated successfully." });
+    // Re-query committed application state for authoritative response
+    const [committedApps]: any = await db.query(`
+      SELECT JA.*, JS.stage_name, JS.stage_type
+      FROM job_applications JA
+      LEFT JOIN job_stages JS ON JA.current_stage_id = JS.id
+      WHERE JA.id = ?
+    `, [applicationId]);
+    const committedApp = committedApps[0] || {};
+    const mapped = mapStageToCanonicalKey({
+      status: committedApp.status,
+      stage_type: committedApp.stage_type,
+      stage_name: committedApp.stage_name
+    });
+
+    res.json({
+      success: true,
+      message: "Stage updated successfully.",
+      application: committedApp,
+      canonicalStageKey: mapped.key,
+      legacyCanonicalKey: mapped.legacyKey
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ success: false, message: "Failed to update stage" });
@@ -2371,12 +2445,31 @@ router.get("/applicants/:jobId", async (req, res) => {
 });
 
 // Get student's applications
-router.get("/student/:studentId", async (req, res) => {
+router.get("/student/:studentId", authenticate, async (req: any, res) => {
   try {
-    const [applications] = await db.query(`
+    const requestedStudentId = Number(req.params.studentId);
+    const authUserId = req.user?.userId;
+
+    if (!authUserId) {
+      return res.status(401).json({ success: false, message: "Unauthorized access." });
+    }
+
+    // Verify student ownership: requested ID must match authenticated user's profile ID or user ID
+    const [profiles]: any = await db.query(
+      "SELECT id, user_id FROM student_profiles WHERE user_id = ? OR id = ?",
+      [authUserId, requestedStudentId]
+    );
+
+    const userProfile = profiles.find((p: any) => p.user_id === authUserId);
+    if (!userProfile || (userProfile.id !== requestedStudentId && authUserId !== requestedStudentId)) {
+      return res.status(403).json({ success: false, message: "Forbidden: You are not authorized to view this student's applications." });
+    }
+
+    const [applications]: any = await db.query(`
       SELECT 
-        JA.*, 
-        J.title, J.deadline, J.job_type,
+        JA.id, JA.job_id, JA.student_id, JA.status, JA.current_stage_id, JA.rejection_stage_id,
+        JA.rejection_feedback, JA.rejected_at, JA.rejection_notification_status, JA.rejection_notified_at,
+        JA.applied_at, J.title, J.deadline, J.job_type,
         CP.company_name, CP.logo_url,
         JS.stage_name as current_stage_name
       FROM job_applications JA
@@ -2385,7 +2478,8 @@ router.get("/student/:studentId", async (req, res) => {
       LEFT JOIN job_stages JS ON JA.current_stage_id = JS.id
       WHERE JA.student_id = ?
       ORDER BY JA.applied_at DESC
-    `, [req.params.studentId]);
+    `, [userProfile.id]);
+
     res.json({ success: true, data: applications });
   } catch (error) {
     res.status(500).json({ success: false, message: "Error fetching applications" });

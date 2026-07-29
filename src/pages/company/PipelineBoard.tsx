@@ -460,7 +460,7 @@ export function PipelineBoard() {
 
   useEffect(() => {
     loadPipeline();
-  }, [user?.id, selectedJobId]);
+  }, [user?.id, selectedJobId, pipelineFilter]);
 
   useEffect(() => {
     const handleJobCreated = () => {
@@ -607,15 +607,15 @@ export function PipelineBoard() {
         feedback: feedbackText || null,
         notifyCandidate: shouldNotify,
       });
+      if (shouldNotify) {
+        markAsContacted(appId);
+      }
+      await fetchData(); // Refresh pipeline immediately to keep data synced
       toast.success(
         action === "REJECTED"
           ? "Application rejected"
           : "Stage updated successfully",
       );
-      if (shouldNotify) {
-        markAsContacted(appId);
-      }
-      fetchData(); // Refresh pipeline immediately to keep data synced
       window.dispatchEvent(new CustomEvent('vega:pipeline-updated'));
     } catch (e) {
       toast.error("Failed to update stage");
@@ -1360,7 +1360,7 @@ export function PipelineBoard() {
 
   const handleNotifyCandidate = async (applicationId: number) => {
     try {
-      const res = await api.post(`/company/applications/${applicationId}/notify-decision`);
+      const res = await api.post(`/jobs/applications/${applicationId}/send-rejection-notification`);
       if (res.data.success) {
         toast.success("Candidate successfully notified via portal and email!");
         setContactedCandidates((prev) => ({ ...prev, [applicationId]: true }));
