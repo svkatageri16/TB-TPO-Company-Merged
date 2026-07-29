@@ -1454,7 +1454,7 @@ router.get("/applications/history/:appId", async (req, res) => {
 
 // Update applicant stage
 router.post("/update-stage", authenticate, async (req: any, res) => {
-  const { applicationId, stageId, action, notes, feedback, notifyCandidate } = req.body;
+  let { applicationId, stageId, action, notes, feedback, notifyCandidate } = req.body;
   try {
     const ctx = await resolveCompanyContext(req);
     if (ctx.error) {
@@ -1639,6 +1639,8 @@ router.post("/update-stage", authenticate, async (req: any, res) => {
     let status = 'IN_PROGRESS';
     if (action === 'SELECTED') {
       status = 'SELECTED';
+    } else if (action === 'HIRED') {
+      status = 'HIRED';
     }
 
     // Verify stage belongs to candidate's job & ordered stage progression
@@ -1651,7 +1653,27 @@ router.post("/update-stage", authenticate, async (req: any, res) => {
         return res.status(400).json({ success: false, message: "Target stage does not belong to this job's pipeline." });
       }
 
-      // Enforce valid next stage progression for non-terminal moves
+      const targetTypeUpper = String(stageRows[0]?.stage_type || '').toUpperCase();
+      const targetNameUpper = String(stageRows[0]?.stage_name || '').toUpperCase();
+      if (
+        action === 'HIRED' ||
+        targetTypeUpper === 'HIRED' ||
+        (targetNameUpper.includes('HIRE') && !targetNameUpper.includes('INTERVIEW'))
+      ) {
+        status = 'HIRED';
+        action = 'HIRED';
+      } else if (
+        action === 'SELECTED' ||
+        ['SELECTED', 'OFFER', 'SHORTLISTED'].includes(targetTypeUpper) ||
+        targetNameUpper.includes('SELECT') ||
+        targetNameUpper.includes('SHORTLIST') ||
+        targetNameUpper.includes('OFFER')
+      ) {
+        status = 'SELECTED';
+        action = 'SELECTED';
+      }
+
+      // Enforce valid next stage progression or stage undo for non-terminal moves
       if (action !== 'SELECTED' && action !== 'REJECTED') {
         const [jobStages]: any = await db.query(
           "SELECT id, stage_name, stage_type, stage_order FROM job_stages WHERE job_id = ? ORDER BY stage_order ASC, id ASC",
@@ -1659,12 +1681,28 @@ router.post("/update-stage", authenticate, async (req: any, res) => {
         );
         const curIdx = jobStages.findIndex((s: any) => Number(s.id) === Number(app.current_stage_id));
         if (curIdx !== -1) {
-          const expectedNext = jobStages[curIdx + 1];
-          if (!expectedNext) {
-            return res.status(400).json({ success: false, message: "Candidate is already at the final stage." });
-          }
-          if (Number(stageId) !== Number(expectedNext.id)) {
-            return res.status(400).json({ success: false, message: "Invalid stage progression: Target stage is not the valid next stage." });
+          if (action === 'UNDO_STAGE' || action === 'PREVIOUS' || action === 'STAGE_REVERSED') {
+            const expectedPrev = jobStages[curIdx - 1];
+            if (!expectedPrev) {
+              return res.status(400).json({ success: false, message: "Candidate is already in the first stage." });
+            }
+            if (Number(stageId) !== Number(expectedPrev.id)) {
+              return res.status(400).json({ success: false, message: "Invalid stage regression: Target stage is not the previous stage." });
+            }
+            const prevType = String(expectedPrev.stage_type || '').toUpperCase();
+            if (prevType === 'APPLICATION' || prevType === 'APPLIED' || Number(expectedPrev.stage_order || 1) === 1) {
+              status = 'APPLIED';
+            } else {
+              status = 'IN_PROGRESS';
+            }
+          } else {
+            const expectedNext = jobStages[curIdx + 1];
+            if (!expectedNext) {
+              return res.status(400).json({ success: false, message: "Candidate is already at the final stage." });
+            }
+            if (Number(stageId) !== Number(expectedNext.id)) {
+              return res.status(400).json({ success: false, message: "Invalid stage progression: Target stage is not the valid next stage." });
+            }
           }
         }
       }
@@ -2131,6 +2169,205 @@ const handleUndoDecision = async (req: any, res: any) => {
 
 router.post("/applications/:applicationId/undo-decision", authenticate, handleUndoDecision);
 router.post("/undo-decision", authenticate, handleUndoDecision);
+
+// Server-authoritative nonterminal Undo endpoint for stage regression
+const handleUndoStage = async (req: any, res: any) => {
+  const applicationId = req.params.applicationId || req.body.applicationId;
+  const { expectedCurrentStageId } = req.body;
+
+  try {
+    const ctx = await resolveCompanyContext(req);
+    if (ctx.error) {
+      return res.status(ctx.statusCode || 403).json({ success: false, message: ctx.error });
+    }
+
+    const appId = Number(applicationId);
+    if (isNaN(appId) || !Number.isFinite(appId)) {
+      return res.status(400).json({ success: false, message: "Invalid application ID." });
+    }
+
+    // 1. Fetch application with company verification
+    const [apps]: any = await db.query(`
+      SELECT JA.*, J.company_id, J.title as job_title, J.status as job_status, J.deadline as job_deadline
+      FROM job_applications JA
+      JOIN jobs J ON JA.job_id = J.id
+      WHERE JA.id = ? AND J.company_id = ?
+    `, [appId, ctx.companyId]);
+
+    if (!apps || apps.length === 0) {
+      return res.status(404).json({ success: false, message: "Application not found or unauthorized access." });
+    }
+
+    const app = apps[0];
+
+    // Sub HR assignment check
+    if (ctx.roleType === 'SUB_HR') {
+      const [jobAssigns]: any = await db.query(
+        "SELECT id FROM company_job_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND job_id = ?",
+        [ctx.companyId, req.user.userId, app.job_id]
+      );
+      const [appAssigns]: any = await db.query(
+        "SELECT id FROM company_application_assignments WHERE company_id = ? AND assigned_hr_user_id = ? AND application_id = ?",
+        [ctx.companyId, req.user.userId, appId]
+      );
+      if (jobAssigns.length === 0 && appAssigns.length === 0) {
+        return res.status(403).json({ success: false, message: "Forbidden: You are not assigned to manage this job or application." });
+      }
+    }
+
+    // 2. Check if job post has ended
+    const isJobClosed = app.job_status === 'CLOSED';
+    let isDeadlinePassed = false;
+    if (app.job_deadline) {
+      const dl = new Date(app.job_deadline);
+      dl.setHours(23, 59, 59, 999);
+      if (dl < new Date()) {
+        isDeadlinePassed = true;
+      }
+    }
+    if (isJobClosed || isDeadlinePassed) {
+      return res.status(400).json({ success: false, message: "This recruitment pipeline has ended. You cannot undo stages on ended positions." });
+    }
+
+    // 3. Block terminal DB status
+    const currentRawStatus = String(app.status || "").toUpperCase();
+    const terminalStatuses = ['SELECTED', 'REJECTED', 'HIRED', 'OFFER_ACCEPTED', 'WITHDRAWN', 'CANCELLED', 'VERIFIED_SELECTION'];
+    if (terminalStatuses.includes(currentRawStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot undo stage for terminal applications. Use undo decision endpoint."
+      });
+    }
+
+    // 4. Verify expectedCurrentStageId
+    if (expectedCurrentStageId !== undefined && expectedCurrentStageId !== null) {
+      const expectedIdNum = Number(expectedCurrentStageId);
+      const actualIdNum = Number(app.current_stage_id);
+      if (expectedIdNum !== actualIdNum) {
+        return res.status(409).json({
+          success: false,
+          message: `Application state has changed. Expected current stage ID ${expectedIdNum} but current stage ID is ${actualIdNum}.`
+        });
+      }
+    }
+
+    // 5. Query ordered job stages
+    const [jobStages]: any = await db.query(
+      "SELECT id, stage_name, stage_type, stage_order FROM job_stages WHERE job_id = ? ORDER BY stage_order ASC, id ASC",
+      [app.job_id]
+    );
+
+    if (!jobStages || jobStages.length === 0) {
+      return res.status(400).json({ success: false, message: "No stages found for this job pipeline." });
+    }
+
+    const curIdx = jobStages.findIndex((s: any) => Number(s.id) === Number(app.current_stage_id));
+    if (curIdx === -1) {
+      return res.status(400).json({ success: false, message: "Current stage not found in job pipeline." });
+    }
+
+    // First stage constraint
+    if (curIdx === 0) {
+      return res.status(400).json({ success: false, message: "Cannot undo stage for candidate at the initial stage." });
+    }
+
+    const targetStage = jobStages[curIdx - 1];
+    const previousStageId = Number(app.current_stage_id);
+    const targetStageId = Number(targetStage.id);
+
+    const targetTypeUpper = String(targetStage.stage_type || "").toUpperCase();
+    const targetOrderNum = Number(targetStage.stage_order || 1);
+    const newStatus = (targetTypeUpper === 'APPLICATION' || targetTypeUpper === 'APPLIED' || targetOrderNum === 1) ? 'APPLIED' : 'IN_PROGRESS';
+
+    // 6. Execute pinned transaction
+    await db.transaction(async (tx) => {
+      // Re-verify and lock application row in transaction
+      const [lockedApps]: any = await tx.query(
+        "SELECT id, current_stage_id, status FROM job_applications WHERE id = ? FOR UPDATE",
+        [appId]
+      );
+      if (!lockedApps || lockedApps.length === 0) {
+        const err: any = new Error("Application not found.");
+        err.statusCode = 404;
+        throw err;
+      }
+      const lockedApp = lockedApps[0];
+
+      if (terminalStatuses.includes(String(lockedApp.status).toUpperCase())) {
+        const err: any = new Error("Cannot undo stage for terminal applications. Use undo decision endpoint.");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      if (expectedCurrentStageId !== undefined && expectedCurrentStageId !== null) {
+        if (Number(lockedApp.current_stage_id) !== Number(expectedCurrentStageId)) {
+          const err: any = new Error(`Application state has changed. Expected current stage ID ${expectedCurrentStageId} but current stage ID is ${lockedApp.current_stage_id}.`);
+          err.statusCode = 409;
+          throw err;
+        }
+      }
+
+      const [updateRes]: any = await tx.query(
+        `UPDATE job_applications
+         SET current_stage_id = ?, status = ?
+         WHERE id = ? AND current_stage_id = ? AND status NOT IN ('SELECTED', 'REJECTED', 'HIRED', 'OFFER_ACCEPTED', 'WITHDRAWN', 'CANCELLED')`,
+        [targetStageId, newStatus, appId, lockedApp.current_stage_id]
+      );
+
+      const affected = updateRes?.affectedRows ?? (Array.isArray(updateRes) && updateRes[0] ? updateRes[0].affectedRows : 0);
+      if (!affected || affected === 0) {
+        const err: any = new Error("Application state changed concurrently.");
+        err.statusCode = 409;
+        throw err;
+      }
+
+      // Record in history
+      await tx.query(
+        "INSERT INTO application_history (application_id, stage_id, action, notes) VALUES (?, ?, ?, ?)",
+        [appId, targetStageId, 'UNDO_STAGE', `Reverted stage from ${previousStageId} to ${targetStageId}`]
+      );
+
+      // Record in audit log
+      try {
+        await tx.query(
+          `INSERT INTO company_audit_logs (company_id, user_id, action_type, target_type, target_id, description)
+           VALUES (?, ?, 'UNDO_STAGE', 'APPLICATION', ?, ?)`,
+          [ctx.companyId, req.user.userId, appId, `Undid stage move for candidate in job ${app.job_title}`]
+        );
+      } catch (e) {}
+    });
+
+    // Map new canonical display bucket
+    const mapped = mapStageToCanonicalKey({
+      status: newStatus,
+      stage_type: targetStage.stage_type,
+      stage_name: targetStage.stage_name
+    });
+
+    return res.json({
+      success: true,
+      message: "Stage reverted successfully",
+      data: {
+        applicationId: appId,
+        previousStageId,
+        targetStageId,
+        newCanonicalKey: mapped.key,
+        status: newStatus
+      }
+    });
+
+  } catch (err: any) {
+    const statusCode = err.statusCode || 500;
+    if (statusCode === 409 || statusCode === 400 || statusCode === 404) {
+      return res.status(statusCode).json({ success: false, message: err.message });
+    }
+    console.error("Error in handleUndoStage:", err.message || err);
+    return res.status(500).json({ success: false, message: err.message || "Failed to undo stage." });
+  }
+};
+
+router.post("/applications/:applicationId/undo-stage", authenticate, handleUndoStage);
+router.post("/undo-stage", authenticate, handleUndoStage);
 
 // Endpoint to retry failed reversal correction notification without running Undo again
 router.post(["/applications/:id/retry-reversal-notification", "/company/applications/:id/retry-reversal-notification"], authenticate, async (req: any, res: any) => {

@@ -130,6 +130,7 @@ const isJobActive = (job: any) => {
   if (!job) return false;
   if (job.status === 'CLOSED') return false;
   if (job.ended_at) return false;
+  if (job.pipeline_ended_at) return false;
   
   const isValidDeadline = job.deadline && 
     job.deadline !== 'null' && 
@@ -527,9 +528,9 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
       role_type: hr.role_type || hr.designation || 'Recruiter'
     }));
 
-    // Get filter option: Jobs
+    // Get filter option: Jobs (only active jobs for requirement selection and scheduling)
     const [companyJobs]: any = await db.query(`
-      SELECT id, title, status, deadline, ended_at FROM jobs WHERE company_id = ?
+      SELECT id, title, status, deadline, ended_at, pipeline_ended_at FROM jobs WHERE company_id = ?
     `, [companyId]);
 
     let filteredCompanyJobs = companyJobs || [];
@@ -537,7 +538,9 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
       filteredCompanyJobs = filteredCompanyJobs.filter((j: any) => assignedJobIds.includes(Number(j.id)));
     }
 
-    const jobsOptions = filteredCompanyJobs.map((j: any) => ({
+    const activeCompanyJobs = filteredCompanyJobs.filter(isJobActive);
+
+    const jobsOptions = activeCompanyJobs.map((j: any) => ({
       id: j.id,
       title: j.title,
       status: j.status

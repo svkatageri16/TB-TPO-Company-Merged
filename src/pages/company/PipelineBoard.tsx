@@ -478,12 +478,48 @@ export function PipelineBoard() {
     await loadPipeline();
   };
 
+  const handleUndoNonterminalStage = async (cand: any) => {
+    const appId = cand.application_id || cand.id;
+    const expectedCurrentStageId = cand.current_stage_id;
+
+    const selectedJob = jobs.find((j: any) => j.id.toString() === selectedJobId);
+    const isClosed = selectedJob && (
+      selectedJob.status === 'CLOSED' || 
+      (selectedJob.deadline && new Date(selectedJob.deadline).setHours(23, 59, 59, 999) < new Date().getTime())
+    );
+    if (isClosed) {
+      toast.error("This job post has ended. Stage movement is disabled in history mode.");
+      return;
+    }
+
+    try {
+      const res = await api.post(`/jobs/applications/${appId}/undo-stage`, {
+        expectedCurrentStageId,
+      });
+      if (res.data && res.data.success) {
+        toast.success(res.data.message || "Stage reverted successfully.");
+        await fetchData();
+        window.dispatchEvent(new CustomEvent('vega:pipeline-updated'));
+      } else {
+        toast.error(res.data?.message || "Failed to revert stage.");
+      }
+    } catch (err: any) {
+      if (err.response?.status === 409) {
+        toast.error(err.response.data?.message || "Pipeline state changed concurrently. Refreshing view...");
+        await fetchData();
+      } else {
+        toast.error(err.response?.data?.message || "Failed to revert stage.");
+      }
+    }
+  };
+
   const updateCandidateStage = async (
     appId: number, 
     newStage: string, 
     feedbackText?: string | null, 
     bypassFeedback?: boolean,
-    notifyCandidateVal?: boolean
+    notifyCandidateVal?: boolean,
+    overrideAction?: string
   ) => {
     if (selectedJobId === "ALL") {
       toast.error(
@@ -511,7 +547,7 @@ export function PipelineBoard() {
     try {
       const cand = allApplicants.find((a) => a.application_id === appId);
       let numericStageId = parseInt(newStage, 10);
-      let action = "IN_PROGRESS";
+      let action = overrideAction || "IN_PROGRESS";
 
       if (newStage === "REJECTED") {
         action = "REJECTED";
@@ -961,12 +997,15 @@ export function PipelineBoard() {
     }
 
     const nextStage = stages[currentIndex + 1];
+    const prevStage = currentIndex > 0 ? stages[currentIndex - 1] : null;
 
     if (!nextStage) {
       return {
         disabled: true,
         label: "Final Stage",
         nextId: null,
+        prevId: prevStage ? Number(prevStage.id) : null,
+        prevLabel: prevStage ? prevStage.stage_name : null,
         reason: "Candidate is already in the final stage.",
       };
     }
@@ -976,6 +1015,8 @@ export function PipelineBoard() {
       label: "Advance",
       nextLabel: `Move to ${nextStage.stage_name}`,
       nextId: Number(nextStage.id),
+      prevId: prevStage ? Number(prevStage.id) : null,
+      prevLabel: prevStage ? prevStage.stage_name : null,
       reason: "",
     };
   };
@@ -2459,6 +2500,7 @@ export function PipelineBoard() {
                       )
                     }
                     onUndoDecision={openUndoModal}
+                    onUndoStage={handleUndoNonterminalStage}
                     contactedCandidates={contactedCandidates}
                     markAsContacted={markAsContacted}
                     activeStages={activeStages}
@@ -2484,6 +2526,7 @@ export function PipelineBoard() {
                 updateCandidateStage(previewCandidate.application_id, action)
               }
               onUndoDecision={openUndoModal}
+              onUndoStage={handleUndoNonterminalStage}
               contactedCandidates={contactedCandidates}
               markAsContacted={markAsContacted}
               activeStages={activeStages}
@@ -3216,6 +3259,7 @@ function CandidateQuickPreview({
   onClose,
   onAction,
   onUndoDecision,
+  onUndoStage,
   isInline = false,
   contactedCandidates = {},
   markAsContacted,
@@ -3498,6 +3542,30 @@ function CandidateQuickPreview({
             >
               <ThumbsDown size={16} />
             </button>
+            {getNextStageInfo && getNextStageInfo(candidate)?.prevId && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedJobId === "ALL") {
+                    toast.error("Select a specific job to move candidates across custom stages.");
+                    return;
+                  }
+                  if (onUndoStage) {
+                    onUndoStage(candidate);
+                  } else {
+                    const stageInfo = getNextStageInfo(candidate);
+                    if (stageInfo?.prevId) {
+                      onAction(stageInfo.prevId.toString(), "Reversed to previous stage", true, true, "UNDO_STAGE");
+                    }
+                  }
+                  onClose();
+                }}
+                className="py-3 bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-1"
+                title="Undo stage move and return candidate to previous phase"
+              >
+                <RefreshCw size={12} /> Undo
+              </button>
+            )}
             <button
               onClick={() => {
                 if (selectedJobId === "ALL") {
@@ -3528,9 +3596,9 @@ function CandidateQuickPreview({
                 }
                 onClose();
               }}
-              className="col-span-2 py-3 bg-slate-900 text-white hover:bg-slate-850 rounded-xl text-[10px] flex items-center justify-center gap-2 font-black uppercase tracking-widest shadow-xl shadow-slate-900/10 transition-all cursor-pointer"
+              className={`${getNextStageInfo && getNextStageInfo(candidate)?.prevId ? "col-span-1" : "col-span-2"} py-3 bg-slate-900 text-white hover:bg-slate-850 rounded-xl text-[10px] flex items-center justify-center gap-1.5 font-black uppercase tracking-widest shadow-xl shadow-slate-900/10 transition-all cursor-pointer`}
             >
-              Advance Candidate <ChevronRight size={14} />
+              Advance <ChevronRight size={14} />
             </button>
           </>
         )}
