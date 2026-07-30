@@ -4284,6 +4284,33 @@ async function runSqliteInit() {
     // Migration for notifications idempotency_key
     try { sqliteDb.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT DEFAULT NULL"); } catch (e) {}
     try { sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key)"); } catch (e) {}
+
+    // Migrations for assessment workflow
+    try { sqliteDb.exec("ALTER TABLE tests ADD COLUMN company_id INTEGER DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE tests ADD COLUMN stage_id INTEGER DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE tests ADD COLUMN cutoff_score REAL DEFAULT 40"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE tests ADD COLUMN duration INTEGER DEFAULT 30"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE tests ADD COLUMN status TEXT DEFAULT 'PUBLISHED'"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE tests ADD COLUMN version INTEGER DEFAULT 1"); } catch (e) {}
+
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN job_id INTEGER DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN percentage REAL DEFAULT 0"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN passed INTEGER DEFAULT 0"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN cutoff_score REAL DEFAULT 0"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN total_marks REAL DEFAULT 100"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN violations_count INTEGER DEFAULT 0"); } catch (e) {}
+
+    try { sqliteDb.exec("ALTER TABLE assessment_tests ADD COLUMN company_id INTEGER DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_tests ADD COLUMN job_id INTEGER DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_tests ADD COLUMN stage_id INTEGER DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_tests ADD COLUMN cutoff_score REAL DEFAULT 40"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_tests ADD COLUMN version INTEGER DEFAULT 1"); } catch (e) {}
+
+    try { sqliteDb.exec("ALTER TABLE assessment_attempts ADD COLUMN job_id INTEGER DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_attempts ADD COLUMN application_id INTEGER DEFAULT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_attempts ADD COLUMN cutoff_score REAL DEFAULT 40"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_attempts ADD COLUMN violations_count INTEGER DEFAULT 0"); } catch (e) {}
+
     // Clean up seeded demo batches to ensure "no static data"
     try {
       sqliteDb.exec("DELETE FROM assessment_batches WHERE batch_name IN ('CS-2024', 'IT-2024', 'ECE-2024')");

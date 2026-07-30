@@ -381,7 +381,7 @@ router.get("/:userId/tests-history", async (req, res) => {
     // Get company profile ID
     const [profiles]: any = await db.query("SELECT id, company_name FROM company_profiles WHERE user_id = ?", [userId]);
     if (profiles.length === 0) {
-      return res.status(404).json({ success: false, message: "Company not found" });
+      return res.json({ success: true, data: [] });
     }
     const companyId = profiles[0].id;
     const companyName = profiles[0].company_name;

@@ -50,6 +50,13 @@ async function getStudentContext(userId: number) {
   return studentProfiles[0];
 }
 
+// Helper: Get Company profile
+async function getCompanyContext(userId: number) {
+  const [profiles]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [userId]);
+  if (profiles.length === 0) return null;
+  return profiles[0];
+}
+
 // Helper: Reverse-Geocode coordinates to address
 async function reverseGeocode(latitude: number | null | undefined, longitude: number | null | undefined): Promise<string> {
   if (!latitude || !longitude) return "Unknown Location (No coordinates)";
@@ -1717,6 +1724,840 @@ No extra characters, no markdown codeblock tags (like \`\`\`json), just the raw 
   } catch (error: any) {
     console.error("Error fetching student detailed report:", error);
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// -------------------------------------------------------------
+// 4. Company & Student Assessment Workflow Endpoints
+// -------------------------------------------------------------
+
+// Helper to resolve company ID for user
+async function resolveCompanyIdForUser(user: any) {
+  if (user.role === "COMPANY_HR" || user.role === "COMPANY_SUB_HR" || user.role === "COMPANY_ADMIN") {
+    const [profiles]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [user.id || user.userId]);
+    if (profiles.length > 0) return profiles[0].id;
+
+    const [hrProfiles]: any = await db.query("SELECT company_id FROM company_hr_profiles WHERE user_id = ?", [user.id || user.userId]);
+    if (hrProfiles.length > 0) return hrProfiles[0].company_id;
+  }
+  return null;
+}
+
+// GET /api/assessments/company/history
+router.get("/company/history", authenticate, async (req: any, res) => {
+  try {
+    const companyId = await resolveCompanyIdForUser(req.user);
+    if (!companyId) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Get company profile name
+    const [profiles]: any = await db.query("SELECT company_name FROM company_profiles WHERE id = ?", [companyId]);
+    const companyName = profiles[0]?.company_name || "Company";
+
+    // Get all jobs for this company
+    const [jobs]: any = await db.query("SELECT id, title FROM jobs WHERE company_id = ?", [companyId]);
+    if (jobs.length === 0) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const jobIds = jobs.map((j: any) => j.id);
+    const jobMap = new Map(jobs.map((j: any) => [j.id, j.title]));
+
+    const placeholders = jobIds.map(() => "?").join(",");
+    const [testsList]: any = await db.query(`
+      SELECT * FROM tests WHERE job_id IN (${placeholders}) OR company_id = ?
+    `, [...jobIds, companyId]);
+
+    const results: any[] = [];
+
+    for (const test of testsList) {
+      const qs = typeof test.questions_json === "string" ? JSON.parse(test.questions_json) : (test.questions_json || []);
+      const questionsCount = qs.length;
+
+      const [submissions]: any = await db.query(`
+        SELECT COUNT(*) as count, AVG(score) as avg_score
+        FROM test_submissions
+        WHERE job_id = ?
+      `, [test.job_id]);
+
+      const submissionsCount = submissions[0]?.count || 0;
+      const avgScore = Math.round(submissions[0]?.avg_score || 0);
+
+      const [assigned]: any = await db.query(`
+        SELECT COUNT(*) as count FROM job_applications
+        WHERE job_id = ? AND status != 'REJECTED' AND status != 'CANCELLED'
+      `, [test.job_id]);
+      const assignedCount = assigned[0]?.count || 0;
+
+      const mappedQuestions = qs.map((q: any, i: number) => ({
+        id: q.id || `q-${test.id}-${i}`,
+        type: q.type || 'MCQ',
+        questionText: q.questionText || q.question || q.text || '',
+        options: q.options || q.options_json || ['', '', '', ''],
+        correctOption: q.correctOption !== undefined ? q.correctOption : 0,
+        points: q.points || 10,
+        difficulty: q.difficulty || 'MEDIUM'
+      }));
+
+      const totalMarks = mappedQuestions.reduce((acc: number, q: any) => acc + (q.points || 10), 0) || 100;
+
+      results.push({
+        id: String(test.id),
+        job_id: test.job_id,
+        job_title: jobMap.get(test.job_id) || "Job Assessment",
+        title: qs[0]?.testTitle || `${jobMap.get(test.job_id) || 'Job'} Assessment`,
+        created_by: companyName,
+        created_date: test.created_at ? new Date(test.created_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+        questions_count: questionsCount,
+        duration: test.duration || qs[0]?.duration || 30,
+        cutoff_score: test.cutoff_score !== undefined ? test.cutoff_score : 40,
+        total_marks: totalMarks,
+        status: test.status || 'PUBLISHED',
+        version: test.version || 1,
+        assigned_count: assignedCount,
+        submissions_count: submissionsCount,
+        average_score: avgScore,
+        questions: mappedQuestions,
+        instructions: qs[0]?.instructions || "Please answer all questions carefully.",
+        stage_id: test.stage_id || null
+      });
+    }
+
+    res.json({ success: true, data: results });
+  } catch (error: any) {
+    console.error("Error in GET /api/assessments/company/history:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch assessment history" });
+  }
+});
+
+// GET /api/assessments/company/attempts
+router.get("/company/attempts", authenticate, async (req: any, res) => {
+  try {
+    const companyId = await resolveCompanyIdForUser(req.user);
+    if (!companyId) {
+      return res.json({ success: true, data: [], pagination: { total: 0, page: 1, limit: 20 } });
+    }
+
+    const { jobId, searchQuery, status, page = 1, limit = 20 } = req.query;
+    const pageNum = Math.max(1, parseInt(String(page)));
+    const limitNum = Math.min(100, Math.max(1, parseInt(String(limit))));
+    const offset = (pageNum - 1) * limitNum;
+
+    let sql = `
+      SELECT 
+        ts.id as attempt_id,
+        ts.job_id,
+        ts.application_id,
+        ts.student_id,
+        ts.score,
+        ts.total_marks,
+        ts.percentage,
+        ts.passed,
+        ts.cutoff_score,
+        ts.violations_count,
+        ts.status as submission_status,
+        ts.submitted_at,
+        sp.full_name as candidate_name,
+        u.email as candidate_email,
+        j.title as job_title,
+        t.id as test_id,
+        t.questions_json
+      FROM test_submissions ts
+      JOIN jobs j ON ts.job_id = j.id
+      JOIN student_profiles sp ON ts.student_id = sp.id
+      JOIN users u ON sp.user_id = u.id
+      LEFT JOIN tests t ON t.job_id = j.id
+      WHERE j.company_id = ?
+    `;
+
+    const params: any[] = [companyId];
+
+    if (jobId && jobId !== 'all') {
+      sql += ` AND ts.job_id = ?`;
+      params.push(Number(jobId));
+    }
+
+    if (status && status !== 'all') {
+      if (status === 'passed') {
+        sql += ` AND (ts.passed = 1 OR ts.score >= ts.cutoff_score)`;
+      } else if (status === 'failed') {
+        sql += ` AND (ts.passed = 0 AND ts.score < ts.cutoff_score)`;
+      }
+    }
+
+    if (searchQuery) {
+      sql += ` AND (sp.full_name LIKE ? OR u.email LIKE ? OR j.title LIKE ?)`;
+      const q = `%${searchQuery}%`;
+      params.push(q, q, q);
+    }
+
+    sql += ` ORDER BY ts.submitted_at DESC LIMIT ? OFFSET ?`;
+    params.push(limitNum, offset);
+
+    const [rows]: any = await db.query(sql, params);
+
+    const attemptsList = (rows || []).map((row: any) => {
+      const qs = typeof row.questions_json === "string" ? JSON.parse(row.questions_json) : (row.questions_json || []);
+      const testTitle = qs[0]?.testTitle || `${row.job_title} Assessment`;
+      const totalScore = row.total_marks || (qs.length * 10) || 100;
+      const cutoff = row.cutoff_score !== undefined ? row.cutoff_score : 40;
+      const isPassed = row.passed === 1 || row.score >= cutoff;
+
+      return {
+        id: String(row.attempt_id),
+        applicationId: row.application_id,
+        jobId: row.job_id,
+        jobTitle: row.job_title,
+        candidateName: row.candidate_name,
+        candidateEmail: row.candidate_email,
+        assessmentTitle: testTitle,
+        score: Math.round(row.score || 0),
+        totalMarks: totalScore,
+        percentage: Math.round(row.percentage || ((row.score / totalScore) * 100) || 0),
+        cutoffScore: cutoff,
+        status: isPassed ? 'Passed' : 'Failed',
+        isPassed,
+        violationsCount: row.violations_count || 0,
+        completedAt: row.submitted_at ? new Date(row.submitted_at).toLocaleString() : new Date().toLocaleString()
+      };
+    });
+
+    res.json({
+      success: true,
+      data: attemptsList,
+      pagination: {
+        total: attemptsList.length,
+        page: pageNum,
+        limit: limitNum
+      }
+    });
+  } catch (error: any) {
+    console.error("Error in GET /api/assessments/company/attempts:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch candidate assessment attempts" });
+  }
+});
+
+// POST /api/assessments/company/create
+router.post("/company/create", authenticate, async (req: any, res) => {
+  try {
+    const { jobId, stageId, title, duration = 30, cutoffScore = 40, questions, instructions } = req.body;
+    const companyId = await resolveCompanyIdForUser(req.user);
+
+    if (!jobId) {
+      return res.status(400).json({ success: false, message: "Job ID is required" });
+    }
+
+    if (!questions || !Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ success: false, message: "At least one question is required" });
+    }
+
+    // Verify job belongs to company
+    const [jobRows]: any = await db.query("SELECT id, title, company_id FROM jobs WHERE id = ?", [jobId]);
+    if (jobRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Job not found" });
+    }
+    if (companyId && jobRows[0].company_id !== companyId) {
+      return res.status(403).json({ success: false, message: "Unauthorized access to job" });
+    }
+
+    // Calculate derived total score
+    const totalScore = questions.reduce((sum: number, q: any) => sum + (Number(q.points) || 10), 0);
+
+    // Validate cutoff score: cutoff >= 0 and cutoff < totalScore
+    const numCutoff = Number(cutoffScore);
+    if (isNaN(numCutoff) || numCutoff < 0 || numCutoff >= totalScore) {
+      return res.status(400).json({
+        success: false,
+        message: `Cutoff score must be greater than or equal to 0 and strictly less than total score (${totalScore}).`
+      });
+    }
+
+    const formattedQuestions = questions.map((q: any, i: number) => ({
+      id: q.id || `q-${Date.now()}-${i}`,
+      type: q.type || 'MCQ',
+      questionText: q.questionText || q.question || '',
+      options: Array.isArray(q.options) ? q.options : ['', '', '', ''],
+      correctOption: q.correctOption !== undefined ? Number(q.correctOption) : 0,
+      points: Number(q.points) || 10,
+      difficulty: q.difficulty || 'MEDIUM',
+      instructions: instructions || 'Please answer all questions carefully.',
+      testTitle: title || `${jobRows[0].title} Assessment`,
+      duration: Number(duration) || 30
+    }));
+
+    const questionsJson = JSON.stringify(formattedQuestions);
+
+    // Check if a test already exists for this job
+    const [existing]: any = await db.query("SELECT id, version FROM tests WHERE job_id = ?", [jobId]);
+
+    let assignedId = null;
+    if (existing.length > 0) {
+      assignedId = existing[0].id;
+      const newVersion = (existing[0].version || 1) + 1;
+      await db.query(`
+        UPDATE tests 
+        SET questions_json = ?, company_id = ?, stage_id = ?, cutoff_score = ?, duration = ?, status = 'PUBLISHED', version = ?
+        WHERE job_id = ?
+      `, [questionsJson, companyId || jobRows[0].company_id, stageId || null, numCutoff, Number(duration), newVersion, jobId]);
+    } else {
+      const [insertRes]: any = await db.query(`
+        INSERT INTO tests (job_id, questions_json, company_id, stage_id, cutoff_score, duration, status, version)
+        VALUES (?, ?, ?, ?, ?, ?, 'PUBLISHED', 1)
+      `, [jobId, questionsJson, companyId || jobRows[0].company_id, stageId || null, numCutoff, Number(duration)]);
+      assignedId = insertRes.insertId;
+    }
+
+    // Persist assignment notification with idempotency key
+    const jobNotifKey = `ASSESSMENT_JOB_ASSIGNED:${assignedId}`;
+    try {
+      await db.query(`
+        INSERT INTO notifications (user_id, title, message, type, idempotency_key)
+        VALUES (?, 'Assessment Assigned', ?, 'INFO', ?)
+      `, [req.user.userId || req.user.id, `Assessment assigned for job ${jobRows[0].title}`, jobNotifKey]);
+    } catch (notifErr) {
+      // Duplicate key conflict handled gracefully without failing assignment
+    }
+
+    res.json({
+      success: true,
+      message: "Assessment saved and assigned successfully!",
+      totalScore,
+      cutoffScore: numCutoff,
+      assignmentId: assignedId
+    });
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/company/create:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to create assessment" });
+  }
+});
+
+// POST /api/assessments/company/bulk-import-questions
+router.post("/company/bulk-import-questions", authenticate, async (req: any, res) => {
+  try {
+    const { rawText, fileType, items } = req.body;
+    let questions: any[] = [];
+
+    if (items && Array.isArray(items) && items.length > 0) {
+      questions = items.map((item: any, i: number) => ({
+        id: `imp-${Date.now()}-${i}`,
+        type: 'MCQ',
+        questionText: item.questionText || item.question || item.text || `Question ${i + 1}`,
+        options: Array.isArray(item.options) ? item.options : [item.optionA || '', item.optionB || '', item.optionC || '', item.optionD || ''],
+        correctOption: item.correctOption !== undefined ? Number(item.correctOption) : (typeof item.answer === 'string' ? ['A','B','C','D'].indexOf(item.answer.toUpperCase()) : 0),
+        points: Number(item.points) || 10,
+        difficulty: item.difficulty || 'MEDIUM'
+      }));
+    } else if (rawText && typeof rawText === 'string') {
+      // Parse structured text / CSV lines
+      const lines = rawText.split(/\r?\n/).filter(l => l.trim().length > 0);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('{') || line.startsWith('[')) continue; // Handled by JSON
+        const parts = line.split(/,|\t|\|/);
+        if (parts.length >= 5) {
+          const qText = parts[0].trim();
+          const opts = [parts[1].trim(), parts[2].trim(), parts[3].trim(), parts[4].trim()];
+          const ansStr = parts[5] ? parts[5].trim().toUpperCase() : 'A';
+          const corr = ['A', 'B', 'C', 'D'].indexOf(ansStr) !== -1 ? ['A', 'B', 'C', 'D'].indexOf(ansStr) : 0;
+          questions.push({
+            id: `imp-${Date.now()}-${i}`,
+            type: 'MCQ',
+            questionText: qText,
+            options: opts,
+            correctOption: corr,
+            points: 10,
+            difficulty: 'MEDIUM'
+          });
+        }
+      }
+    }
+
+    if (questions.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid questions could be extracted. Please ensure CSV/Text format: Question, Option A, Option B, Option C, Option D, Correct Option (A/B/C/D)."
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Extracted ${questions.length} questions for preview.`,
+      questions
+    });
+  } catch (error: any) {
+    console.error("Error in bulk import questions:", error);
+    res.status(500).json({ success: false, message: "Failed to parse questions import file" });
+  }
+});
+
+// GET /api/assessments/student/eligible
+router.get("/student/eligible", authenticate, async (req: any, res) => {
+  try {
+    const studentCtx = await getStudentContext(req.user.userId || req.user.id);
+    if (!studentCtx) {
+      return res.status(404).json({ success: false, message: "Student profile not found" });
+    }
+
+    const [apps]: any = await db.query(`
+      SELECT 
+        a.id as application_id,
+        a.job_id,
+        a.current_stage_id,
+        a.status as app_status,
+        j.title as job_title,
+        cp.company_name,
+        js.stage_name,
+        js.stage_type,
+        t.id as test_id,
+        t.questions_json,
+        t.duration,
+        t.cutoff_score,
+        ts.id as submission_id,
+        ts.score,
+        ts.passed,
+        ts.submitted_at
+      FROM job_applications a
+      JOIN jobs j ON a.job_id = j.id
+      JOIN company_profiles cp ON j.company_id = cp.id
+      JOIN job_stages js ON a.current_stage_id = js.id
+      JOIN tests t ON t.job_id = j.id
+      LEFT JOIN test_submissions ts ON ts.application_id = a.id
+      WHERE a.student_id = ? AND a.status = 'IN_PROGRESS'
+        AND (UPPER(js.stage_type) IN ('TEST', 'ASSESSMENT', 'TESTING') OR UPPER(js.stage_name) LIKE '%TEST%' OR UPPER(js.stage_name) LIKE '%ASSESS%')
+    `, [studentCtx.id]);
+
+    const eligibleList = (apps || []).map((app: any) => {
+      const qs = typeof app.questions_json === "string" ? JSON.parse(app.questions_json) : (app.questions_json || []);
+      const totalMarks = qs.reduce((acc: number, q: any) => acc + (q.points || 10), 0) || 100;
+
+      return {
+        applicationId: app.application_id,
+        jobId: app.job_id,
+        jobTitle: app.job_title,
+        companyName: app.company_name,
+        testTitle: qs[0]?.testTitle || `${app.job_title} Assessment`,
+        questionsCount: qs.length,
+        duration: app.duration || 30,
+        totalMarks,
+        cutoffScore: app.cutoff_score !== undefined ? app.cutoff_score : 40,
+        isSubmitted: !!app.submission_id,
+        score: app.score !== null ? app.score : null,
+        passed: app.passed === 1,
+        submittedAt: app.submitted_at
+      };
+    });
+
+    res.json({ success: true, assessments: eligibleList });
+  } catch (error: any) {
+    console.error("Error in GET /api/assessments/student/eligible:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch student eligible assessments" });
+  }
+});
+
+// Canonical submission service function
+export async function submitAssessmentAttempt(attemptId: any, reqUser: any, answers: any) {
+  const studentCtx = await getStudentContext(reqUser.userId || reqUser.id);
+  
+  // Fetch application details
+  const [apps]: any = await db.query(`
+    SELECT a.id, a.job_id, a.student_id, a.current_stage_id, t.id as assignment_id, t.questions_json as test_questions_json, t.cutoff_score as test_cutoff_score, t.version as test_version
+    FROM job_applications a
+    JOIN tests t ON t.job_id = a.job_id
+    WHERE a.id = ?
+  `, [attemptId]);
+
+  if (apps.length === 0) {
+    return { status: 404, data: { success: false, message: "Eligible assessment attempt not found" } };
+  }
+
+  if (apps.length > 1) {
+    return {
+      status: 409,
+      data: {
+        success: false,
+        code: "AMBIGUOUS_ATTEMPT",
+        message: "Multiple assessment attempts match this application. Submit using the exact attempt ID."
+      }
+    };
+  }
+
+  const appRow = apps[0];
+  if (studentCtx && appRow.student_id !== studentCtx.id) {
+    return { status: 403, data: { success: false, message: "Unauthorized submission attempt" } };
+  }
+
+  // Check existing submission for exact attempt / application
+  const [existingSub]: any = await db.query("SELECT * FROM test_submissions WHERE application_id = ?", [attemptId]);
+
+  let sub: any = null;
+  if (existingSub.length > 0) {
+    sub = existingSub[0];
+    if (sub.status === 'COMPLETED' || sub.status === 'SUBMITTED') {
+      return {
+        status: 200,
+        data: {
+          success: true,
+          message: "Assessment submitted successfully! (Re-submitting returned committed result)",
+          earnedScore: sub.score,
+          totalMarks: sub.total_marks,
+          percentage: sub.percentage,
+          cutoffScore: sub.cutoff_score,
+          isPassed: sub.passed === 1,
+          submittedAt: sub.submitted_at
+        }
+      };
+    }
+  }
+
+  // Score strictly from the attempt snapshot (test_submissions.questions_json) or test fallback
+  let questions: any[] = [];
+  if (sub && sub.questions_json) {
+    questions = typeof sub.questions_json === "string" ? JSON.parse(sub.questions_json) : sub.questions_json;
+  } else if (appRow.test_questions_json) {
+    questions = typeof appRow.test_questions_json === "string" ? JSON.parse(appRow.test_questions_json) : appRow.test_questions_json;
+  }
+
+  let earnedScore = 0;
+  let totalMarks = sub?.total_marks || 0;
+  if (!totalMarks || totalMarks === 0) {
+    totalMarks = questions.reduce((acc: number, q: any) => acc + (Number(q.points || q.marks) || 10), 0) || 100;
+  }
+
+  questions.forEach((q: any) => {
+    const qPts = Number(q.points || q.marks) || 10;
+    const studentAns = answers ? answers[q.id] : undefined;
+    if (studentAns !== undefined && Number(studentAns) === Number(q.correctOption)) {
+      earnedScore += qPts;
+    }
+  });
+
+  const cutoff = sub?.cutoff_score !== undefined && sub?.cutoff_score !== null ? sub.cutoff_score : (appRow.test_cutoff_score !== undefined ? appRow.test_cutoff_score : 40);
+  const percentage = totalMarks > 0 ? Math.round((earnedScore / totalMarks) * 100) : 0;
+  const isPassed = earnedScore >= cutoff ? 1 : 0;
+
+  // Derive integrity/violations count strictly from server event logs and stored counter
+  let serverViolationsCount = sub?.violations_count || 0;
+  try {
+    const [eventRows]: any = await db.query("SELECT COUNT(*) as count FROM test_submission_events WHERE application_id = ?", [attemptId]);
+    if (eventRows.length > 0 && eventRows[0].count > 0) {
+      serverViolationsCount = Math.max(serverViolationsCount, eventRows[0].count);
+    }
+  } catch (err) {}
+
+  let attemptSubmissionId = sub?.id;
+
+  if (sub) {
+    await db.query(`
+      UPDATE test_submissions
+      SET score = ?, total_marks = ?, percentage = ?, passed = ?, cutoff_score = ?, violations_count = ?, answers_json = ?, status = 'COMPLETED', submitted_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [earnedScore, totalMarks, percentage, isPassed, cutoff, serverViolationsCount, JSON.stringify(answers || {}), sub.id]);
+  } else {
+    const [subResult]: any = await db.query(`
+      INSERT INTO test_submissions (assignment_id, application_id, student_id, job_id, stage_id, score, total_marks, percentage, passed, cutoff_score, assessment_version, questions_json, violations_count, answers_json, status, submitted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', CURRENT_TIMESTAMP)
+    `, [appRow.assignment_id || null, attemptId, appRow.student_id, appRow.job_id, appRow.current_stage_id, earnedScore, totalMarks, percentage, isPassed, cutoff, appRow.test_version || 1, JSON.stringify(questions), serverViolationsCount, JSON.stringify(answers || {})]);
+    attemptSubmissionId = subResult.insertId || attemptId;
+  }
+
+  // Persist submission notification with idempotency key
+  const subNotifKey = `ASSESSMENT_SUBMITTED:${attemptSubmissionId}`;
+  try {
+    await db.query(`
+      INSERT INTO notifications (user_id, title, message, type, idempotency_key)
+      VALUES (?, 'Assessment Submitted', 'Your test submission has been recorded.', 'INFO', ?)
+    `, [studentCtx ? studentCtx.user_id : (reqUser.userId || reqUser.id), subNotifKey]);
+  } catch (notifErr) {
+    // Duplicate key conflict handled gracefully without failing submission
+  }
+
+  return {
+    status: 200,
+    data: {
+      success: true,
+      message: "Assessment submitted successfully!",
+      earnedScore,
+      totalMarks,
+      percentage,
+      cutoffScore: cutoff,
+      isPassed: isPassed === 1
+    }
+  };
+}
+
+// POST /api/assessments/student/start (atomically initializes or resumes attempt snapshot)
+router.post("/student/start", authenticate, async (req: any, res) => {
+  try {
+    const { applicationId, testId } = req.body;
+    const targetAppId = applicationId || testId;
+    const studentCtx = await getStudentContext(req.user.userId || req.user.id);
+
+    if (!targetAppId) {
+      return res.status(400).json({ success: false, message: "Application ID or Test ID is required" });
+    }
+
+    // Fetch application and test details
+    const [apps]: any = await db.query(`
+      SELECT a.id as application_id, a.job_id, a.student_id, a.current_stage_id, t.id as assignment_id, t.questions_json, t.cutoff_score, t.duration, t.version, t.assessment_id
+      FROM job_applications a
+      JOIN tests t ON t.job_id = a.job_id
+      WHERE a.id = ?
+    `, [targetAppId]);
+
+    if (apps.length === 0) {
+      return res.status(404).json({ success: false, message: "Test assignment not found for this application" });
+    }
+
+    const appRow = apps[0];
+    if (studentCtx && appRow.student_id !== studentCtx.id) {
+      return res.status(403).json({ success: false, message: "Unauthorized attempt access" });
+    }
+
+    // Check if attempt already initialized in test_submissions
+    const [existingSub]: any = await db.query("SELECT * FROM test_submissions WHERE application_id = ?", [targetAppId]);
+
+    let fullQuestions: any[] = [];
+    let cutoffScore = appRow.cutoff_score !== undefined ? appRow.cutoff_score : 40;
+    let duration = appRow.duration || 30;
+    let version = appRow.version || 1;
+
+    if (existingSub.length > 0 && existingSub[0].questions_json) {
+      // Resume existing snapshot
+      const sub = existingSub[0];
+      fullQuestions = typeof sub.questions_json === "string" ? JSON.parse(sub.questions_json) : sub.questions_json;
+      cutoffScore = sub.cutoff_score !== undefined && sub.cutoff_score !== null ? sub.cutoff_score : cutoffScore;
+    } else {
+      // Atomically create snapshot on start
+      fullQuestions = typeof appRow.questions_json === "string" ? JSON.parse(appRow.questions_json) : (appRow.questions_json || []);
+      const totalMarks = fullQuestions.reduce((sum: number, q: any) => sum + (Number(q.points || q.marks) || 10), 0) || 100;
+
+      if (existingSub.length === 0) {
+        await db.query(`
+          INSERT INTO test_submissions (assignment_id, application_id, student_id, job_id, stage_id, score, total_marks, percentage, passed, cutoff_score, assessment_version, questions_json, status)
+          VALUES (?, ?, ?, ?, ?, 0, ?, 0, 0, ?, ?, ?, 'IN_PROGRESS')
+        `, [appRow.assignment_id || null, targetAppId, appRow.student_id, appRow.job_id, appRow.current_stage_id, totalMarks, cutoffScore, version, JSON.stringify(fullQuestions)]);
+      } else {
+        await db.query(`
+          UPDATE test_submissions
+          SET questions_json = ?, cutoff_score = ?, total_marks = ?, assessment_version = ?
+          WHERE id = ?
+        `, [JSON.stringify(fullQuestions), cutoffScore, totalMarks, version, existingSub[0].id]);
+      }
+    }
+
+    // Return sanitized payload for Student: NO correctOption, NO explanation, NO scores, NO cutoff manipulation
+    const sanitizedQuestions = fullQuestions.map((q: any, i: number) => ({
+      id: q.id || `q-${i}`,
+      type: q.type || 'MCQ',
+      questionText: q.questionText || q.question || q.text || '',
+      options: q.options || ['', '', '', ''],
+      points: Number(q.points || q.marks) || 10,
+      sortOrder: i + 1
+    }));
+
+    const totalMarks = fullQuestions.reduce((sum: number, q: any) => sum + (Number(q.points || q.marks) || 10), 0) || 100;
+
+    res.json({
+      success: true,
+      applicationId: targetAppId,
+      assignmentId: appRow.assignment_id,
+      assessmentId: appRow.assessment_id || appRow.assignment_id,
+      assessmentVersion: version,
+      durationMinutes: duration,
+      totalMarks,
+      questions: sanitizedQuestions
+    });
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/student/start:", error);
+    res.status(500).json({ success: false, message: "Failed to start assessment attempt" });
+  }
+});
+
+// POST /api/assessments/student/submit
+router.post("/student/submit", authenticate, async (req: any, res) => {
+  try {
+    const { applicationId, answers } = req.body;
+
+    if (!applicationId || !answers) {
+      return res.status(400).json({ success: false, message: "Application ID and answers are required" });
+    }
+
+    const result = await submitAssessmentAttempt(applicationId, req.user, answers);
+    res.status(result.status).json(result.data);
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/student/submit:", error);
+    res.status(500).json({ success: false, message: "Failed to process assessment submission" });
+  }
+});
+
+// POST /api/assessments/student/submit/:attemptId
+router.post("/student/submit/:attemptId", authenticate, async (req: any, res) => {
+  try {
+    const attemptId = req.params.attemptId || req.body.applicationId;
+    const { answers } = req.body;
+
+    if (!attemptId) {
+      return res.status(400).json({ success: false, message: "Attempt ID or Application ID is required" });
+    }
+
+    const result = await submitAssessmentAttempt(attemptId, req.user, answers);
+    res.status(result.status).json(result.data);
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/student/submit/:attemptId:", error);
+    res.status(500).json({ success: false, message: "Failed to process assessment submission" });
+  }
+});
+
+// POST /api/assessments/student/event (proctoring/integrity violations)
+router.post("/student/event", authenticate, async (req: any, res) => {
+  try {
+    const { applicationId, eventType, idempotencyKey } = req.body;
+    const studentCtx = await getStudentContext(req.user.userId || req.user.id);
+
+    if (!applicationId || !eventType) {
+      return res.status(400).json({ success: false, message: "Application ID and eventType are required" });
+    }
+
+    const [apps]: any = await db.query("SELECT id, student_id FROM job_applications WHERE id = ?", [applicationId]);
+    if (apps.length === 0) {
+      return res.status(404).json({ success: false, message: "Application not found" });
+    }
+
+    if (studentCtx && apps[0].student_id !== studentCtx.id) {
+      return res.status(403).json({ success: false, message: "Unauthorized attempt access" });
+    }
+
+    if (idempotencyKey) {
+      try {
+        const [existingKey]: any = await db.query("SELECT id FROM test_submission_events WHERE idempotency_key = ?", [idempotencyKey]);
+        if (existingKey.length > 0) {
+          return res.status(409).json({ success: false, message: "Duplicate event key blocked" });
+        }
+      } catch (e) {}
+    }
+
+    try {
+      await db.query(`
+        INSERT INTO test_submission_events (application_id, student_id, event_type, idempotency_key)
+        VALUES (?, ?, ?, ?)
+      `, [applicationId, studentCtx ? studentCtx.id : apps[0].student_id, eventType, idempotencyKey || null]);
+    } catch (e) {
+      return res.status(409).json({ success: false, message: "Duplicate event key blocked" });
+    }
+
+    // Increment violations_count on test_submissions if existing, or log event
+    await db.query(`
+      UPDATE test_submissions
+      SET violations_count = violations_count + 1
+      WHERE application_id = ?
+    `, [applicationId]);
+
+    res.json({
+      success: true,
+      message: `Integrity event ${eventType} recorded successfully.`,
+      applicationId,
+      eventType
+    });
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/student/event:", error);
+    res.status(500).json({ success: false, message: "Failed to log integrity event" });
+  }
+});
+
+// POST /api/assessments/company/bulk-advance (Advance candidates in TESTING phase)
+router.post("/company/bulk-advance", authenticate, async (req: any, res) => {
+  try {
+    const { applications, applicationIds, expectedCurrentStageId, targetStageId, companyId, jobId } = req.body;
+    const companyCtx = await getCompanyContext(req.user.userId || req.user.id);
+
+    // Reject legacy or prohibited parameters
+    if (targetStageId !== undefined || companyId !== undefined || jobId !== undefined) {
+      return res.status(400).json({
+        success: false,
+        message: "Legacy payload fields (targetStageId, companyId, jobId) are not allowed."
+      });
+    }
+
+    if (expectedCurrentStageId !== undefined && Array.isArray(applicationIds) && applicationIds.length > 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Shared top-level expectedCurrentStageId for multi-job batch is rejected. Provide application-specific expectedCurrentStageId inside applications array."
+      });
+    }
+
+    let itemsToProcess: { applicationId: number; expectedCurrentStageId?: number }[] = [];
+    if (Array.isArray(applications) && applications.length > 0) {
+      itemsToProcess = applications;
+    } else if (Array.isArray(applicationIds) && applicationIds.length > 0) {
+      itemsToProcess = applicationIds.map((id: number) => ({
+        applicationId: id,
+        expectedCurrentStageId: expectedCurrentStageId
+      }));
+    } else {
+      return res.status(400).json({ success: false, message: "applications array is required" });
+    }
+
+    const results: any[] = [];
+
+    for (const item of itemsToProcess) {
+      const appId = item.applicationId;
+      try {
+        const [appRows]: any = await db.query(`
+          SELECT a.id, a.job_id, a.current_stage_id, j.company_id
+          FROM job_applications a
+          JOIN jobs j ON a.job_id = j.id
+          WHERE a.id = ?
+        `, [appId]);
+
+        if (appRows.length === 0) {
+          results.push({ applicationId: appId, success: false, message: "Application not found" });
+          continue;
+        }
+
+        const app = appRows[0];
+        if (companyCtx && app.company_id !== companyCtx.id) {
+          results.push({ applicationId: appId, success: false, message: "Company unauthorized" });
+          continue;
+        }
+
+        if (item.expectedCurrentStageId !== undefined && item.expectedCurrentStageId !== null && app.current_stage_id !== item.expectedCurrentStageId) {
+          results.push({ applicationId: appId, success: false, message: `Stale stage detected: expected stage ${item.expectedCurrentStageId} but candidate is at stage ${app.current_stage_id}` });
+          continue;
+        }
+
+        // Fetch ordered stages for job
+        const [stages]: any = await db.query("SELECT id, stage_order FROM job_stages WHERE job_id = ? ORDER BY stage_order ASC", [app.job_id]);
+        const currentIdx = stages.findIndex((s: any) => s.id === app.current_stage_id);
+
+        if (currentIdx === -1 || currentIdx >= stages.length - 1) {
+          results.push({ applicationId: appId, success: false, message: "No next stage available" });
+          continue;
+        }
+
+        const nextStage = stages[currentIdx + 1];
+
+        // Perform stage transition
+        await db.query("UPDATE job_applications SET current_stage_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [nextStage.id, appId]);
+        await db.query(`
+          INSERT INTO application_history (application_id, stage_id, action, notes)
+          VALUES (?, ?, 'BULK_ADVANCE', 'Advanced candidate via Bulk Assessment Advance')
+        `, [appId, nextStage.id]);
+
+        results.push({ applicationId: appId, success: true, nextStageId: nextStage.id });
+      } catch (err: any) {
+        results.push({ applicationId: appId, success: false, message: err.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Processed bulk advance for ${itemsToProcess.length} candidates.`,
+      results
+    });
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/company/bulk-advance:", error);
+    res.status(500).json({ success: false, message: "Failed to perform bulk advance" });
   }
 });
 

@@ -1,0 +1,116 @@
+-- Migration: 20260730_assessment_workflow_mysql.sql
+-- Additive & Idempotent migration for Assessment Workflow in MySQL (talentbridge01)
+
+USE talentbridge01;
+
+DELIMITER $$
+
+-- Helper Procedure to safely add a column if it doesn't exist
+DROP PROCEDURE IF EXISTS AddColumnIfNotExists$$
+CREATE PROCEDURE AddColumnIfNotExists(
+    IN p_tableName VARCHAR(64),
+    IN p_columnName VARCHAR(64),
+    IN p_columnDef VARCHAR(255)
+)
+BEGIN
+    IF NOT EXISTS (
+        SELECT NULL FROM information_schema.columns 
+        WHERE table_schema = DATABASE() 
+          AND table_name = p_tableName 
+          AND column_name = p_columnName
+    ) THEN
+        SET @sql = CONCAT('ALTER TABLE `', p_tableName, '` ADD COLUMN `', p_columnName, '` ', p_columnDef);
+        PREPARE stmt FROM @sql;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END$$
+
+-- Helper Procedure to safely create an index if it doesn't exist
+DROP PROCEDURE IF EXISTS CreateIndexIfNotExists$$
+CREATE PROCEDURE CreateIndexIfNotExists(
+    IN p_tableName VARCHAR(64),
+    IN p_indexName VARCHAR(64),
+    IN p_columns VARCHAR(255)
+)
+BEGIN
+    IF NOT EXISTS (
+        SELECT NULL FROM information_schema.statistics 
+        WHERE table_schema = DATABASE() 
+          AND table_name = p_tableName 
+          AND index_name = p_indexName
+    ) THEN
+        SET @sql = CONCAT('CREATE INDEX `', p_indexName, '` ON `', p_tableName, '` (', p_columns, ')');
+        PREPARE stmt FROM @sql;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END$$
+
+DELIMITER ;
+
+-- 1. Ensure tests table has assessment metadata columns
+CALL AddColumnIfNotExists('tests', 'assessment_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('tests', 'company_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('tests', 'stage_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('tests', 'cutoff_score', 'DOUBLE DEFAULT 40');
+CALL AddColumnIfNotExists('tests', 'duration', 'INT DEFAULT 30');
+CALL AddColumnIfNotExists('tests', 'status', 'VARCHAR(50) DEFAULT \'PUBLISHED\'');
+CALL AddColumnIfNotExists('tests', 'version', 'INT DEFAULT 1');
+
+-- 2. Ensure test_submissions table has job_id, assignment_id, score and proctoring tracking columns
+CALL AddColumnIfNotExists('test_submissions', 'assignment_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('test_submissions', 'job_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('test_submissions', 'application_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('test_submissions', 'attempt_number', 'INT DEFAULT 1');
+CALL AddColumnIfNotExists('test_submissions', 'assessment_version', 'INT DEFAULT 1');
+CALL AddColumnIfNotExists('test_submissions', 'questions_json', 'LONGTEXT DEFAULT NULL');
+CALL AddColumnIfNotExists('test_submissions', 'percentage', 'DOUBLE DEFAULT 0');
+CALL AddColumnIfNotExists('test_submissions', 'passed', 'TINYINT(1) DEFAULT 0');
+CALL AddColumnIfNotExists('test_submissions', 'cutoff_score', 'DOUBLE DEFAULT 0');
+CALL AddColumnIfNotExists('test_submissions', 'total_marks', 'DOUBLE DEFAULT 100');
+CALL AddColumnIfNotExists('test_submissions', 'violations_count', 'INT DEFAULT 0');
+CALL AddColumnIfNotExists('test_submissions', 'status', 'VARCHAR(50) DEFAULT \'SUBMITTED\'');
+
+CREATE TABLE IF NOT EXISTS test_submission_events (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    application_id INT NOT NULL,
+    student_id INT DEFAULT NULL,
+    event_type VARCHAR(100) NOT NULL,
+    idempotency_key VARCHAR(255) DEFAULT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Backfill job_id and assignment_id safely from job_applications & tests to resolve nulls and correct non-null mismatches from authoritative application row
+UPDATE test_submissions ts 
+JOIN job_applications ja ON ts.application_id = ja.id 
+SET ts.job_id = ja.job_id 
+WHERE ts.job_id IS NULL OR ts.job_id != ja.job_id;
+
+UPDATE test_submissions ts 
+JOIN tests t ON ts.job_id = t.job_id 
+SET ts.assignment_id = t.id 
+WHERE ts.assignment_id IS NULL;
+
+-- 3. Ensure assessment_tests table supports company ownership and job linkage
+CALL AddColumnIfNotExists('assessment_tests', 'company_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('assessment_tests', 'job_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('assessment_tests', 'stage_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('assessment_tests', 'cutoff_score', 'DOUBLE DEFAULT 40');
+CALL AddColumnIfNotExists('assessment_tests', 'version', 'INT DEFAULT 1');
+
+-- 4. Ensure assessment_attempts table tracks job application and proctoring
+CALL AddColumnIfNotExists('assessment_attempts', 'job_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('assessment_attempts', 'application_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('assessment_attempts', 'cutoff_score', 'DOUBLE DEFAULT 40');
+CALL AddColumnIfNotExists('assessment_attempts', 'violations_count', 'INT DEFAULT 0');
+
+-- 5. Create indexes safely for fast history and pipeline score queries
+CALL CreateIndexIfNotExists('test_submissions', 'idx_test_sub_job_app', 'job_id, student_id');
+CALL CreateIndexIfNotExists('test_submissions', 'idx_test_sub_app', 'application_id');
+CALL CreateIndexIfNotExists('tests', 'idx_tests_company', 'company_id');
+CALL CreateIndexIfNotExists('tests', 'idx_tests_job', 'job_id');
+
+-- Clean up helper stored procedures
+DROP PROCEDURE IF EXISTS AddColumnIfNotExists;
+DROP PROCEDURE IF EXISTS CreateIndexIfNotExists;

@@ -23,6 +23,7 @@ import {
   X,
   PlusCircle,
   Award,
+  Upload,
   ChevronDown
 } from 'lucide-react';
 import api from '../../services/api';
@@ -126,57 +127,38 @@ export default function CompanyAssessments() {
     }
   ]);
 
-  // Attempts sample/mock state
-  const [attempts, setAttempts] = useState<any[]>([
-    {
-      id: 'att-1',
-      candidateName: 'Aditya Shinde',
-      assessmentTitle: 'Senior Frontend Developer Assessment',
-      score: 90,
-      passingScore: 70,
-      completedAt: '2026-06-19 14:32',
-      status: 'Passed'
-    },
-    {
-      id: 'att-2',
-      candidateName: 'Priya Deshmukh',
-      assessmentTitle: 'Senior Frontend Developer Assessment',
-      score: 60,
-      passingScore: 70,
-      completedAt: '2026-06-18 10:15',
-      status: 'Failed'
-    },
-    {
-      id: 'att-3',
-      candidateName: 'Rahul Kulkarni',
-      assessmentTitle: 'Backend Systems & Database Engineer',
-      score: 80,
-      passingScore: 70,
-      completedAt: '2026-06-19 16:45',
-      status: 'Passed'
-    }
-  ]);
+  // Cutoff Score & Bulk Import States
+  const [newCutoffScore, setNewCutoffScore] = useState<number>(40);
+  const [bulkRawText, setBulkRawText] = useState('');
+  const [bulkImportPreview, setBulkImportPreview] = useState<Question[] | null>(null);
+  const [showBulkImportModal, setShowBulkImportModal] = useState(false);
+
+  // Authenticated History & Scores attempts state
+  const [attempts, setAttempts] = useState<any[]>([]);
 
   // Fetch data on load
   const fetchTestData = async () => {
     if (!user?.id) return;
     try {
       setLoading(true);
-      const [testsRes, jobsRes] = await Promise.all([
-        api.get(`/company/${user.id}/tests-history`),
-        api.get(`/jobs`)
+      const [testsRes, jobsRes, attemptsRes] = await Promise.all([
+        api.get('/assessments/company/history').catch(() => api.get(`/company/${user.id}/tests-history`)),
+        api.get('/jobs'),
+        api.get('/assessments/company/attempts').catch(() => ({ data: { success: true, data: [] } }))
       ]);
 
       if (testsRes.data?.success) {
         setDbTests(testsRes.data.data);
       }
       if (jobsRes.data?.success) {
-        // Filter jobs matching company profile ID
         const companyJobs = jobsRes.data.data.filter((j: any) => j.company_id === profile?.id);
-        setJobs(companyJobs);
+        setJobs(companyJobs.length > 0 ? companyJobs : jobsRes.data.data);
         if (companyJobs.length > 0) {
           setNewJobId(String(companyJobs[0].id));
         }
+      }
+      if (attemptsRes.data?.success) {
+        setAttempts(attemptsRes.data.data || []);
       }
     } catch (err) {
       console.error('Failed to fetch assessment history:', err);
@@ -216,9 +198,15 @@ export default function CompanyAssessments() {
       }
     }
 
+    // Calculate total score
+    const totalScore = newQuestions.reduce((acc, q) => acc + (Number(q.points) || 10), 0);
+    if (newCutoffScore < 0 || newCutoffScore >= totalScore) {
+      toast.error(`Cutoff score must be >= 0 and strictly less than total score (${totalScore}).`);
+      return;
+    }
+
     try {
       setLoading(true);
-      // Construct final questions structure with instructions & category wrapped
       const formattedQuestions = newQuestions.map(q => ({
         ...q,
         instructions: newInstructions,
@@ -227,11 +215,25 @@ export default function CompanyAssessments() {
         testTitle: newTestTitle
       }));
 
-      const res = await api.post('/company/tests', {
-        jobId: parseInt(newJobId),
-        stageId: newStageId ? parseInt(newStageId) : undefined,
-        questions: formattedQuestions
-      });
+      let res;
+      try {
+        res = await api.post('/assessments/company/create', {
+          jobId: parseInt(newJobId),
+          stageId: newStageId ? parseInt(newStageId) : undefined,
+          title: newTestTitle,
+          duration: newDuration,
+          cutoffScore: newCutoffScore,
+          questions: formattedQuestions,
+          instructions: newInstructions
+        });
+      } catch (err: any) {
+        // Fallback to legacy endpoint if required
+        res = await api.post('/company/tests', {
+          jobId: parseInt(newJobId),
+          stageId: newStageId ? parseInt(newStageId) : undefined,
+          questions: formattedQuestions
+        });
+      }
 
       if (res.data?.success) {
         toast.success('Assessment test created successfully!');
@@ -430,14 +432,14 @@ export default function CompanyAssessments() {
   });
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto" id="company-assessments-container">
+    <div className="space-y-5 w-full max-w-[1550px] mx-auto px-2 sm:px-4 lg:px-6" id="company-assessments-container">
       {/* Header and Controls */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-3xl font-black text-slate-900 uppercase tracking-tight italic">
             Placement <span className="text-indigo-600">Assessments</span>
           </h1>
-          <p className="text-slate-500 font-medium">Design automated assessment rules, evaluate MCQs, and track participant standings.</p>
+          <p className="text-slate-500 font-medium text-xs sm:text-sm">Design automated assessment rules, evaluate candidate MCQs, and track participant standings.</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -457,7 +459,7 @@ export default function CompanyAssessments() {
             onClick={() => setActiveTab('attempts')}
             className={`px-4 py-2 rounded-xl font-bold transition-all text-sm cursor-pointer ${activeTab === 'attempts' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}`}
           >
-            Attempts
+            History & Scores
           </button>
         </div>
       </div>
@@ -732,6 +734,25 @@ export default function CompanyAssessments() {
               />
             </div>
             <div>
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Assignment Cutoff Score (Passing Mark)</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min={0}
+                  max={newQuestions.reduce((acc, q) => acc + (Number(q.points) || 10), 0) - 1 || 100}
+                  value={newCutoffScore}
+                  onChange={(e) => setNewCutoffScore(parseInt(e.target.value) || 0)}
+                  className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 font-semibold text-sm outline-none focus:border-indigo-500 transition-colors text-slate-800"
+                />
+                <span className="absolute right-3 top-3 text-xs font-bold text-slate-400">
+                  Total: {newQuestions.reduce((acc, q) => acc + (Number(q.points) || 10), 0)} pts
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 font-medium mt-1">
+                Must be strictly less than total score ({newQuestions.reduce((acc, q) => acc + (Number(q.points) || 10), 0)} pts).
+              </p>
+            </div>
+            <div>
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Topic Focus / Category</label>
               <input
                 type="text"
@@ -759,13 +780,22 @@ export default function CompanyAssessments() {
               <h3 className="text-base font-bold text-slate-800">MCQ Questions Setup ({newQuestions.length})</h3>
               <p className="text-xs text-slate-500">Provide direct MCQs with corresponding weight points and difficulty parameters.</p>
             </div>
-            <button
-              type="button"
-              onClick={addQuestionField}
-              className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded-lg text-xs transition-colors flex items-center gap-1 cursor-pointer"
-            >
-              <Plus size={14} /> Add Question
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowBulkImportModal(true)}
+                className="px-3.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg text-xs transition-colors flex items-center gap-1 cursor-pointer border border-emerald-200"
+              >
+                <Upload size={14} /> Bulk Import Questions
+              </button>
+              <button
+                type="button"
+                onClick={addQuestionField}
+                className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded-lg text-xs transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                <Plus size={14} /> Add Question
+              </button>
+            </div>
           </div>
 
           {/* Questions Fields Map */}
@@ -875,45 +905,74 @@ export default function CompanyAssessments() {
 
       {activeTab === 'attempts' && (
         <div className="bg-white rounded-3xl border border-slate-100 p-6 shadow-sm overflow-hidden space-y-4">
-          <div className="border-b border-slate-100 pb-4">
-            <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight italic text-slate-850">Evaluate Submissions</h2>
-            <p className="text-xs text-slate-500 font-medium">Examine applicant code correctness, MCQ marks, and pass statuses.</p>
+          <div className="border-b border-slate-100 pb-4 flex justify-between items-center">
+            <div>
+              <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight italic">Candidate History & Scores</h2>
+              <p className="text-xs text-slate-500 font-medium">Verified database records of student assessment attempts and integrity status.</p>
+            </div>
+            <button
+              onClick={fetchTestData}
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              Refresh Scores
+            </button>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-100">
-                  <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider">Candidate</th>
-                  <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider">Assessment Challenge</th>
-                  <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider text-center">Score</th>
-                  <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider text-center">Outcome Status</th>
-                  <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider text-right">Completion DateTime</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {attempts.map(att => (
-                  <tr key={att.id} className="hover:bg-slate-50/50">
-                    <td className="py-3.5 px-4 font-bold text-slate-900 text-sm">{att.candidateName}</td>
-                    <td className="py-3.5 px-4 font-medium text-slate-600 text-sm">{att.assessmentTitle}</td>
-                    <td className="py-3.5 px-4 text-center">
-                      <span className={`font-mono font-bold text-sm ${att.score >= att.passingScore ? 'text-emerald-600' : 'text-red-500'}`}>
-                        {att.score}%
-                      </span>
-                      <span className="text-[10px] text-slate-400 block">Passing: {att.passingScore}%</span>
-                    </td>
-                    <td className="py-3.5 px-4 text-center">
-                      <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full ${att.status === 'Passed' ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'}`}>
-                        {att.status === 'Passed' ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
-                        {att.status}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 text-right text-xs text-slate-400 font-bold">{att.completedAt}</td>
+          {attempts.length === 0 ? (
+            <div className="p-12 text-center bg-slate-50/50 rounded-2xl border border-dashed border-slate-200 space-y-3">
+              <Users size={36} className="mx-auto text-slate-300" />
+              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">No Submissions Recorded</h3>
+              <p className="text-xs text-slate-400 font-medium max-w-md mx-auto">
+                Candidates moved to the Assessment stage for your company's active jobs will complete tests and their evaluated scores will automatically appear here.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider">Candidate Name</th>
+                    <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider">Applied Position</th>
+                    <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider text-center">Cutoff & Total</th>
+                    <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider text-center">Score Earned</th>
+                    <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider text-center">Result Status</th>
+                    <th className="py-3 px-4 text-[10px] uppercase font-black text-slate-400 tracking-wider text-right">Completion Date</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {attempts.map(att => {
+                    const cutoff = att.cutoffScore !== undefined ? att.cutoffScore : (att.passingScore || 40);
+                    const isPassed = att.isPassed !== undefined ? att.isPassed : (att.status === 'Passed' || att.score >= cutoff);
+
+                    return (
+                      <tr key={att.id} className="hover:bg-slate-50/50">
+                        <td className="py-3.5 px-4">
+                          <p className="font-bold text-slate-900 text-sm">{att.candidateName}</p>
+                          {att.candidateEmail && <p className="text-[11px] text-slate-400 font-medium">{att.candidateEmail}</p>}
+                        </td>
+                        <td className="py-3.5 px-4 font-medium text-slate-600 text-sm">{att.jobTitle || att.assessmentTitle}</td>
+                        <td className="py-3.5 px-4 text-center text-xs font-semibold text-slate-600">
+                          Cutoff: <span className="font-bold text-indigo-600">{cutoff}</span> / {att.totalMarks || 100}
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className={`font-mono font-black text-sm ${isPassed ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            {att.score} pts ({att.percentage || 0}%)
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full ${isPassed ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-rose-50 text-rose-600 border border-rose-100'}`}>
+                            {isPassed ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
+                            {isPassed ? 'Passed' : 'Failed'}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-right text-xs text-slate-400 font-bold">{att.completedAt}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -1174,6 +1233,149 @@ export default function CompanyAssessments() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* --- MODAL C: BULK IMPORT QUESTIONS --- */}
+      {showBulkImportModal && (
+        <div className="fixed inset-0 bg-slate-950/45 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-3xl w-full max-h-[85vh] overflow-hidden shadow-2xl border border-slate-100 flex flex-col">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/80">
+              <div>
+                <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
+                  <Upload size={18} className="text-emerald-600" /> Bulk Import Question Bank
+                </h3>
+                <p className="text-xs text-slate-500 font-medium">Import MCQs via CSV, JSON, TXT, XLSX, DOCX, or structured text format.</p>
+              </div>
+              <button 
+                onClick={() => { setShowBulkImportModal(false); setBulkImportPreview(null); setBulkRawText(''); }}
+                className="p-1.5 hover:bg-slate-200 rounded-xl text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5 flex-1">
+              {/* Template Download & Format Guide */}
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-black uppercase text-indigo-600 tracking-wider">Format Standard</span>
+                  <p className="text-xs text-slate-600 font-medium">CSV Format: <code className="bg-white px-1.5 py-0.5 rounded border border-slate-200 text-slate-800 text-[11px]">Question, Option A, Option B, Option C, Option D, Correct Option (A/B/C/D)</code></p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const csvContent = "data:text/csv;charset=utf-8," + encodeURIComponent(
+                      "Question Text,Option A,Option B,Option C,Option D,Correct Option,Points,Difficulty\n" +
+                      "What is the time complexity of binary search?,O(n),O(log n),O(n^2),O(1),B,10,EASY\n" +
+                      "Which keyword declares a block-scoped variable in JS?,var,let,global,define,B,10,MEDIUM"
+                    );
+                    const link = document.createElement("a");
+                    link.setAttribute("href", csvContent);
+                    link.setAttribute("download", "assessment_questions_template.csv");
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                  }}
+                  className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold rounded-xl text-xs flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+                >
+                  <FileText size={14} className="text-emerald-600" /> Download CSV Template
+                </button>
+              </div>
+
+              {/* Raw Text Input */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Paste Raw Content (CSV / JSON / Text)</label>
+                <textarea
+                  rows={6}
+                  placeholder={`Paste content here...\nExample:\nWhat is SQL?,Structured Query Language,Sequential Query Logic,Server Quality Language,System Query List,A,10,EASY`}
+                  value={bulkRawText}
+                  onChange={(e) => setBulkRawText(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono outline-none focus:border-indigo-500 text-slate-800"
+                />
+              </div>
+
+              <div className="flex justify-between items-center pt-1">
+                <button
+                  type="button"
+                  disabled={!bulkRawText.trim() || loading}
+                  onClick={async () => {
+                    try {
+                      setLoading(true);
+                      const res = await api.post('/assessments/company/bulk-import-questions', {
+                        rawText: bulkRawText
+                      });
+                      if (res.data?.success && Array.isArray(res.data.questions)) {
+                        setBulkImportPreview(res.data.questions);
+                        toast.success(`Extracted ${res.data.questions.length} questions for preview.`);
+                      } else {
+                        toast.error(res.data?.message || 'Failed to parse questions.');
+                      }
+                    } catch (err: any) {
+                      toast.error(err.response?.data?.message || 'Error parsing bulk questions.');
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <Search size={14} /> Parse & Preview
+                </button>
+              </div>
+
+              {/* Preview Table */}
+              {bulkImportPreview && (
+                <div className="space-y-3 pt-3 border-t border-slate-100">
+                  <h4 className="text-xs font-black uppercase text-slate-700 tracking-wider flex items-center gap-1.5">
+                    <CheckCircle2 size={14} className="text-emerald-600" /> Validated Preview ({bulkImportPreview.length} Questions)
+                  </h4>
+                  <div className="max-h-60 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">
+                    {bulkImportPreview.map((pq, idx) => (
+                      <div key={idx} className="p-3 text-xs space-y-1.5 bg-slate-50/50">
+                        <div className="flex justify-between font-bold text-slate-800">
+                          <span>#{idx + 1}. {pq.questionText}</span>
+                          <span className="text-indigo-600">{pq.points || 10} pts</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1 text-[11px] text-slate-600">
+                          {pq.options.map((opt, oIdx) => (
+                            <div key={oIdx} className={`px-2 py-0.5 rounded border ${oIdx === pq.correctOption ? 'bg-emerald-50 border-emerald-200 text-emerald-700 font-bold' : 'bg-white border-slate-150'}`}>
+                              {String.fromCharCode(65 + oIdx)}. {opt} {oIdx === pq.correctOption ? '✓' : ''}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setShowBulkImportModal(false); setBulkImportPreview(null); setBulkRawText(''); }}
+                className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!bulkImportPreview || bulkImportPreview.length === 0}
+                onClick={() => {
+                  if (bulkImportPreview && bulkImportPreview.length > 0) {
+                    setNewQuestions(prev => [...prev, ...bulkImportPreview]);
+                    toast.success(`Appended ${bulkImportPreview.length} questions to assessment!`);
+                    setShowBulkImportModal(false);
+                    setBulkImportPreview(null);
+                    setBulkRawText('');
+                  }
+                }}
+                className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+              >
+                <Plus size={14} /> Confirm & Append Questions
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

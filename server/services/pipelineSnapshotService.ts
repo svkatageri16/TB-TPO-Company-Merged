@@ -216,7 +216,14 @@ export async function getPipelineSnapshot(
       u.email,
       u.email as student_email,
       ts.overall_score as talent_score,
-      sps.avg_interview_score
+      sps.avg_interview_score,
+      test_res.score as assessment_score,
+      test_res.total_marks as assessment_total_score,
+      test_res.percentage as assessment_percentage,
+      test_res.passed as assessment_passed,
+      test_res.cutoff_score as assessment_cutoff,
+      test_res.violations_count as assessment_violations_count,
+      test_res.submission_status as assessment_status
     FROM job_applications a
     JOIN jobs j ON a.job_id = j.id
     LEFT JOIN job_stages js ON a.current_stage_id = js.id
@@ -224,6 +231,25 @@ export async function getPipelineSnapshot(
     LEFT JOIN users u ON sp.user_id = u.id
     LEFT JOIN talent_scores ts ON u.id = ts.user_id
     LEFT JOIN student_performance_stats sps ON u.id = sps.user_id
+    LEFT JOIN (
+      SELECT 
+        sub.job_id,
+        sub.student_id,
+        sub.application_id,
+        sub.score,
+        sub.total_marks,
+        sub.percentage,
+        sub.passed,
+        sub.cutoff_score,
+        sub.violations_count,
+        sub.status as submission_status
+      FROM test_submissions sub
+      INNER JOIN (
+        SELECT COALESCE(application_id, 0) as app_id, student_id, job_id, MAX(id) as max_id 
+        FROM test_submissions 
+        GROUP BY COALESCE(application_id, 0), student_id, job_id
+      ) latest ON sub.id = latest.max_id
+    ) test_res ON (test_res.application_id = a.id OR (test_res.job_id = a.job_id AND test_res.student_id = a.student_id))
     WHERE j.company_id = ?
   `;
 
