@@ -96,6 +96,7 @@ CALL AddColumnIfNotExists('test_submissions', 'cutoff_score', 'DOUBLE DEFAULT 0'
 CALL AddColumnIfNotExists('test_submissions', 'total_marks', 'DOUBLE DEFAULT 100');
 CALL AddColumnIfNotExists('test_submissions', 'violations_count', 'INT DEFAULT 0');
 CALL AddColumnIfNotExists('test_submissions', 'status', 'VARCHAR(50) DEFAULT \'SUBMITTED\'');
+CALL AddColumnIfNotExists('test_submissions', 'duration', 'INT DEFAULT 30');
 
 CREATE TABLE IF NOT EXISTS test_submission_events (
     id INT AUTO_INCREMENT PRIMARY KEY,

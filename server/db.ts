@@ -2321,6 +2321,37 @@ export async function initDb() {
       } catch (err: any) {
         console.error("Error creating assessment_notifications:", err.message);
       }
+
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS assessment_idempotency_requests (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            company_id INT NOT NULL,
+            operation VARCHAR(100) NOT NULL,
+            idempotency_key VARCHAR(255) NOT NULL,
+            request_hash VARCHAR(64) NOT NULL,
+            status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+            assessment_id INT DEFAULT NULL,
+            response_json LONGTEXT DEFAULT NULL,
+            locked_at TIMESTAMP NULL DEFAULT NULL,
+            completed_at TIMESTAMP NULL DEFAULT NULL,
+            failed_at TIMESTAMP NULL DEFAULT NULL,
+            failure_code VARCHAR(100) DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NULL DEFAULT NULL,
+            UNIQUE KEY idx_comp_op_key (company_id, operation, idempotency_key)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (err: any) {
+        console.error("Error creating assessment_idempotency_requests in MySQL:", err.message);
+      }
+
+      try { await connection.query("ALTER TABLE assessment_idempotency_requests ADD COLUMN locked_at TIMESTAMP NULL DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE assessment_idempotency_requests ADD COLUMN completed_at TIMESTAMP NULL DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE assessment_idempotency_requests ADD COLUMN failed_at TIMESTAMP NULL DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE assessment_idempotency_requests ADD COLUMN failure_code VARCHAR(100) DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE assessment_idempotency_requests ADD COLUMN expires_at TIMESTAMP NULL DEFAULT NULL"); } catch (e) {}
     }
 
     // Apply High-Coverage Performance Indices for MySQL
@@ -2853,6 +2884,105 @@ export async function initDb() {
   } catch (err) {
     console.error("❌ Error setting up Community tables:", err);
   }
+
+  // Assessment Database Preflight Verification
+  const preflight = await ensureAssessmentSchema();
+  if (!preflight.ready) {
+    console.error("❌ Assessment database schema initialization failed. Missing elements:", preflight.missing);
+    throw new Error(`Assessment database schema initialization failed: missing ${preflight.missing.join(', ')}`);
+  } else {
+    console.log("✅ Assessment database schema preflight verified successfully.");
+  }
+}
+
+export async function ensureAssessmentSchema(): Promise<{ ready: boolean; missing: string[] }> {
+  const missing: string[] = [];
+
+  try {
+    if (useMySQL && pool) {
+      const requiredTables = [
+        'assessment_idempotency_requests',
+        'tests',
+        'test_submissions',
+        'assessment_tests',
+        'assessment_attempts',
+        'test_submission_events'
+      ];
+
+      for (const tbl of requiredTables) {
+        const [rows]: any = await pool.query("SHOW TABLES LIKE ?", [tbl]);
+        if (!rows || rows.length === 0) {
+          missing.push(`table:${tbl}`);
+        }
+      }
+
+      if (!missing.includes('table:assessment_idempotency_requests')) {
+        const [cols]: any = await pool.query("DESCRIBE `assessment_idempotency_requests`");
+        const colNames = cols.map((c: any) => c.Field);
+        const reqCols = ['company_id', 'operation', 'idempotency_key', 'request_hash', 'status', 'response_json', 'locked_at', 'completed_at', 'failed_at', 'failure_code'];
+        for (const c of reqCols) {
+          if (!colNames.includes(c)) {
+            missing.push(`column:assessment_idempotency_requests.${c}`);
+          }
+        }
+
+        const [idxRows]: any = await pool.query("SHOW INDEX FROM `assessment_idempotency_requests` WHERE Key_name = 'idx_comp_op_key'");
+        if (!idxRows || idxRows.length === 0) {
+          missing.push('index:assessment_idempotency_requests.idx_comp_op_key');
+        }
+      }
+
+      if (!missing.includes('table:test_submissions')) {
+        const [subCols]: any = await pool.query("DESCRIBE `test_submissions`");
+        const subColNames = subCols.map((c: any) => c.Field);
+        const reqSubCols = ['questions_json', 'cutoff_score', 'total_marks', 'duration', 'assignment_id'];
+        for (const sc of reqSubCols) {
+          if (!subColNames.includes(sc)) {
+            missing.push(`column:test_submissions.${sc}`);
+          }
+        }
+      }
+
+      if (!missing.includes('table:test_submission_events')) {
+        const [evtCols]: any = await pool.query("DESCRIBE `test_submission_events`");
+        const evtColNames = evtCols.map((c: any) => c.Field);
+        if (!evtColNames.includes('attempt_id')) {
+          missing.push('column:test_submission_events.attempt_id');
+        }
+      }
+    } else {
+      if (!sqliteDb) {
+        setupSQLite();
+      }
+      const requiredTables = [
+        'assessment_idempotency_requests',
+        'tests',
+        'test_submissions'
+      ];
+
+      for (const tbl of requiredTables) {
+        const row = sqliteDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tbl);
+        if (!row) {
+          missing.push(`table:${tbl}`);
+        }
+      }
+
+      if (!missing.includes('table:assessment_idempotency_requests')) {
+        const cols: any = sqliteDb.prepare("PRAGMA table_info(assessment_idempotency_requests)").all();
+        const colNames = cols.map((c: any) => c.name);
+        const reqCols = ['company_id', 'operation', 'idempotency_key', 'request_hash', 'status', 'response_json', 'locked_at', 'completed_at', 'failed_at', 'failure_code'];
+        for (const c of reqCols) {
+          if (!colNames.includes(c)) {
+            missing.push(`column:assessment_idempotency_requests.${c}`);
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    missing.push(`error:${err.message}`);
+  }
+
+  return { ready: missing.length === 0, missing };
 }
 
 async function runSqliteInit() {

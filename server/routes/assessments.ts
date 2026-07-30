@@ -2311,6 +2311,13 @@ router.post("/company/create", authenticate, async (req: any, res) => {
       } catch (e) {}
     }
     console.error("Error in POST /api/assessments/company/create:", error);
+    if (error.code === 'ER_NO_SUCH_TABLE' || (error.message && (error.message.includes("doesn't exist") || error.message.includes("no such table")))) {
+      return res.status(503).json({
+        success: false,
+        code: "ASSESSMENT_SCHEMA_NOT_READY",
+        message: "The Assessment database schema is not initialized. Please contact the administrator."
+      });
+    }
     res.status(500).json({ success: false, message: error.message || "Failed to create assessment" });
   }
 });
