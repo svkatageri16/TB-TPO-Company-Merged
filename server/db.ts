@@ -61,6 +61,78 @@ function setupSQLite() {
     try { sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key)"); } catch (e) {}
     try {
       sqliteDb.exec(`
+        CREATE TABLE IF NOT EXISTS tests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL DEFAULT 'Untitled Assessment',
+          description TEXT,
+          company_id INTEGER,
+          job_id INTEGER,
+          stage_id INTEGER,
+          cutoff_score REAL DEFAULT 40,
+          duration INTEGER DEFAULT 30,
+          status TEXT DEFAULT 'PUBLISHED',
+          version INTEGER DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS test_submissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id INTEGER NOT NULL,
+          test_id INTEGER,
+          assignment_id INTEGER,
+          assessment_version_id INTEGER,
+          job_id INTEGER,
+          application_id INTEGER,
+          score REAL DEFAULT 0,
+          percentage REAL DEFAULT 0,
+          passed INTEGER DEFAULT 0,
+          cutoff_score REAL DEFAULT 0,
+          total_marks REAL DEFAULT 100,
+          duration INTEGER DEFAULT 30,
+          questions_json TEXT,
+          violations_count INTEGER DEFAULT 0,
+          status TEXT DEFAULT 'SUBMITTED',
+          submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS test_submission_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          attempt_id INTEGER,
+          application_id INTEGER,
+          student_id INTEGER,
+          event_type TEXT NOT NULL,
+          event_data TEXT,
+          idempotency_key TEXT UNIQUE,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS assessment_tests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          company_id INTEGER,
+          job_id INTEGER,
+          stage_id INTEGER,
+          title TEXT NOT NULL,
+          description TEXT,
+          cutoff_score REAL DEFAULT 40,
+          version INTEGER DEFAULT 1,
+          status TEXT DEFAULT 'DRAFT',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS assessment_attempts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          assessment_id INTEGER NOT NULL,
+          student_user_id INTEGER NOT NULL,
+          job_id INTEGER,
+          application_id INTEGER,
+          status TEXT DEFAULT 'STARTED',
+          score REAL DEFAULT 0,
+          percentage REAL DEFAULT 0,
+          violations_count INTEGER DEFAULT 0,
+          started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          submitted_at DATETIME
+        );
+
         CREATE TABLE IF NOT EXISTS assessment_idempotency_requests (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           company_id INTEGER NOT NULL,
@@ -77,7 +149,7 @@ function setupSQLite() {
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           expires_at DATETIME DEFAULT NULL
-        )
+        );
       `);
       sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_comp_op_key ON assessment_idempotency_requests(company_id, operation, idempotency_key)");
     } catch (e) {}
@@ -85,7 +157,13 @@ function setupSQLite() {
     try { sqliteDb.exec("ALTER TABLE assessment_idempotency_requests ADD COLUMN completed_at DATETIME NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE assessment_idempotency_requests ADD COLUMN failed_at DATETIME NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE assessment_idempotency_requests ADD COLUMN failure_code VARCHAR(100) NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN assignment_id INTEGER NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN assessment_version_id INTEGER NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN questions_json TEXT NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN cutoff_score REAL DEFAULT 0"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN total_marks REAL DEFAULT 100"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN duration INTEGER DEFAULT 30"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submission_events ADD COLUMN attempt_id INTEGER NULL"); } catch (e) {}
     console.log("📦 SQLite Database initialized (WAL mode & busy_timeout=10s active)");
   }
 }
@@ -95,7 +173,7 @@ function initializeMySQLPool() {
     host: mysqlHost || "localhost",
     user: mysqlUser || "root",
     password: mysqlPassword || "",
-    database: mysqlDatabase || "vega_preserved_fallback",
+    database: mysqlDatabase || "talentbridge01",
     port: parseInt((mysqlPort || "3306").toString()),
     waitForConnections: true,
     connectionLimit: 150, // Optimal high-concurrency connection pool limit
@@ -296,7 +374,14 @@ export async function initDb() {
       while (retries > 0) {
         try {
           connection = await pool.getConnection();
-          console.log(`📡 Successfully connected to MySQL Database (${mysqlDatabase || 'default'})`);
+          const [dbNameRows]: any = await connection.query("SELECT DATABASE() AS database_name");
+          const actualDbName = dbNameRows[0]?.database_name;
+          console.log(`📡 Connected MySQL Database (SELECT DATABASE()): ${actualDbName}`);
+          if (actualDbName !== 'talentbridge01') {
+            console.error(`🚨 FATAL DATABASE MISMATCH: Connected database '${actualDbName}' is not canonical 'talentbridge01'`);
+            throw new Error(`Connected MySQL database '${actualDbName}' does not match canonical 'talentbridge01'`);
+          }
+          console.log(`📡 Successfully connected to canonical MySQL Database (${actualDbName})`);
           break;
         } catch (err: any) {
           retries--;
@@ -2957,7 +3042,10 @@ export async function ensureAssessmentSchema(): Promise<{ ready: boolean; missin
       const requiredTables = [
         'assessment_idempotency_requests',
         'tests',
-        'test_submissions'
+        'test_submissions',
+        'assessment_tests',
+        'assessment_attempts',
+        'test_submission_events'
       ];
 
       for (const tbl of requiredTables) {
@@ -2975,6 +3063,25 @@ export async function ensureAssessmentSchema(): Promise<{ ready: boolean; missin
           if (!colNames.includes(c)) {
             missing.push(`column:assessment_idempotency_requests.${c}`);
           }
+        }
+      }
+
+      if (!missing.includes('table:test_submissions')) {
+        const cols: any = sqliteDb.prepare("PRAGMA table_info(test_submissions)").all();
+        const colNames = cols.map((c: any) => c.name);
+        const reqSubCols = ['questions_json', 'cutoff_score', 'total_marks', 'duration', 'assignment_id'];
+        for (const sc of reqSubCols) {
+          if (!colNames.includes(sc)) {
+            missing.push(`column:test_submissions.${sc}`);
+          }
+        }
+      }
+
+      if (!missing.includes('table:test_submission_events')) {
+        const cols: any = sqliteDb.prepare("PRAGMA table_info(test_submission_events)").all();
+        const colNames = cols.map((c: any) => c.name);
+        if (!colNames.includes('attempt_id')) {
+          missing.push('column:test_submission_events.attempt_id');
         }
       }
     }

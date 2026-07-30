@@ -73,7 +73,21 @@ CALL AddColumnIfNotExists('assessment_idempotency_requests', 'completed_at', 'TI
 CALL AddColumnIfNotExists('assessment_idempotency_requests', 'failed_at', 'TIMESTAMP NULL DEFAULT NULL');
 CALL AddColumnIfNotExists('assessment_idempotency_requests', 'failure_code', 'VARCHAR(100) DEFAULT NULL');
 
--- 1. Ensure tests table has assessment metadata columns
+-- 1. Ensure tests table exists and has assessment metadata columns
+CREATE TABLE IF NOT EXISTS tests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    company_id INT DEFAULT NULL,
+    job_id INT DEFAULT NULL,
+    stage_id INT DEFAULT NULL,
+    cutoff_score DOUBLE DEFAULT 40,
+    duration INT DEFAULT 30,
+    status VARCHAR(50) DEFAULT 'PUBLISHED',
+    version INT DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CALL AddColumnIfNotExists('tests', 'assessment_id', 'INT DEFAULT NULL');
 CALL AddColumnIfNotExists('tests', 'company_id', 'INT DEFAULT NULL');
 CALL AddColumnIfNotExists('tests', 'stage_id', 'INT DEFAULT NULL');
@@ -82,7 +96,27 @@ CALL AddColumnIfNotExists('tests', 'duration', 'INT DEFAULT 30');
 CALL AddColumnIfNotExists('tests', 'status', 'VARCHAR(50) DEFAULT \'PUBLISHED\'');
 CALL AddColumnIfNotExists('tests', 'version', 'INT DEFAULT 1');
 
--- 2. Ensure test_submissions table has job_id, assignment_id, score and proctoring tracking columns
+-- 2. Ensure test_submissions table exists and has job_id, assignment_id, score and proctoring tracking columns
+CREATE TABLE IF NOT EXISTS test_submissions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    student_id INT NOT NULL,
+    test_id INT DEFAULT NULL,
+    assignment_id INT DEFAULT NULL,
+    assessment_version_id INT DEFAULT NULL,
+    job_id INT DEFAULT NULL,
+    application_id INT DEFAULT NULL,
+    score DOUBLE DEFAULT 0,
+    percentage DOUBLE DEFAULT 0,
+    passed TINYINT(1) DEFAULT 0,
+    cutoff_score DOUBLE DEFAULT 0,
+    total_marks DOUBLE DEFAULT 100,
+    duration INT DEFAULT 30,
+    questions_json LONGTEXT DEFAULT NULL,
+    violations_count INT DEFAULT 0,
+    status VARCHAR(50) DEFAULT 'SUBMITTED',
+    submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CALL AddColumnIfNotExists('test_submissions', 'assignment_id', 'INT DEFAULT NULL');
 CALL AddColumnIfNotExists('test_submissions', 'assessment_version_id', 'INT DEFAULT NULL');
 CALL AddColumnIfNotExists('test_submissions', 'job_id', 'INT DEFAULT NULL');

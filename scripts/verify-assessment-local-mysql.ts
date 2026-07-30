@@ -52,7 +52,7 @@ async function verifyLocalMysql() {
     }
 
     // 3. Existence of required tables, columns, indexes, FKs, constraints
-    const requiredTables = ['tests', 'test_submissions', 'assessment_tests', 'assessment_attempts', 'assessment_idempotency_requests'];
+    const requiredTables = ['tests', 'test_submissions', 'assessment_tests', 'assessment_attempts', 'assessment_idempotency_requests', 'test_submission_events'];
     for (const tbl of requiredTables) {
       const [tableCheck]: any = await connection.query("SHOW TABLES LIKE ?", [tbl]);
       if (tableCheck.length === 0) {
