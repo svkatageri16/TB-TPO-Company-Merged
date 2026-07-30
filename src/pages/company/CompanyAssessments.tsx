@@ -77,6 +77,70 @@ export default function CompanyAssessments() {
   const [viewingTest, setViewingTest] = useState<DBTestHistory | null>(null);
   const [editingTest, setEditingTest] = useState<DBTestHistory | null>(null);
 
+  // Workflow tracking states
+  const [workflowState, setWorkflowState] = useState<'IDLE' | 'DRAFT_CREATED' | 'PUBLISHED_UNASSIGNED' | 'ASSIGNED' | 'ASSIGNMENT_FAILED'>('IDLE');
+  const [createdAssessmentId, setCreatedAssessmentId] = useState<string | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+
+  // Retry handlers for partial workflow failures
+  const handleRetryPublish = async (assessmentId: string) => {
+    try {
+      setLoading(true);
+      setWorkflowError(null);
+      await api.post('/assessments/company/publish', { assessmentId });
+      setWorkflowState('PUBLISHED_UNASSIGNED');
+      toast.success('Assessment published successfully!');
+      
+      if (newJobId) {
+        await handleRetryAssign(assessmentId);
+      } else {
+        await fetchTestData();
+      }
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message || 'Publish failed';
+      setWorkflowError(`Publish failed: ${msg}`);
+      toast.error(`Publish failed: ${msg}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRetryAssign = async (assessmentId: string) => {
+    if (!newJobId) {
+      toast.error('Please select a target job for assignment');
+      return;
+    }
+    try {
+      setLoading(true);
+      setWorkflowError(null);
+      await api.post('/assessments/company/assign', {
+        assessmentId,
+        jobId: parseInt(newJobId),
+        stageId: newStageId ? parseInt(newStageId) : undefined,
+        cutoffScore: newCutoffScore
+      }, {
+        headers: { 'Idempotency-Key': `ASSIGN:${assessmentId}:${newJobId}` }
+      });
+      setWorkflowState('ASSIGNED');
+      toast.success('Assessment assigned successfully!');
+      await fetchTestData();
+      clientRequestIdRef.current = crypto.randomUUID();
+      setCreatedAssessmentId(null);
+      setWorkflowError(null);
+      setWorkflowState('IDLE');
+      setNewTestTitle('');
+      setActiveTab('list');
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message || 'Assignment failed';
+      setWorkflowState('ASSIGNMENT_FAILED');
+      setWorkflowError(`Assignment failed: ${msg}`);
+      toast.error(`Assignment failed: ${msg}`);
+      await fetchTestData();
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Form states for NEW test builder
   const [newJobId, setNewJobId] = useState('');
   const [selectedJobStages, setSelectedJobStages] = useState<any[]>([]);
@@ -136,16 +200,23 @@ export default function CompanyAssessments() {
   // Authenticated History & Scores attempts state
   const [attempts, setAttempts] = useState<any[]>([]);
 
-  // Fetch data on load
+  // Stale request & idempotency tracking refs
+  const fetchSeqRef = React.useRef(0);
+  const clientRequestIdRef = React.useRef<string>(crypto.randomUUID());
+
+  // Fetch data on load with stale response protection
   const fetchTestData = async () => {
     if (!user?.id) return;
+    const currentSeq = ++fetchSeqRef.current;
     try {
       setLoading(true);
       const [testsRes, jobsRes, attemptsRes] = await Promise.all([
-        api.get('/assessments/company/history').catch(() => api.get(`/company/${user.id}/tests-history`)),
+        api.get('/assessments/company/tests').catch(() => api.get('/assessments/company/history')),
         api.get('/jobs'),
-        api.get('/assessments/company/attempts').catch(() => ({ data: { success: true, data: [] } }))
+        api.get('/assessments/company/history').catch(() => api.get('/assessments/company/attempts'))
       ]);
+
+      if (currentSeq !== fetchSeqRef.current) return;
 
       if (testsRes.data?.success) {
         setDbTests(testsRes.data.data);
@@ -161,10 +232,13 @@ export default function CompanyAssessments() {
         setAttempts(attemptsRes.data.data || []);
       }
     } catch (err) {
+      if (currentSeq !== fetchSeqRef.current) return;
       console.error('Failed to fetch assessment history:', err);
       toast.error('Could not load test histories.');
     } finally {
-      setLoading(false);
+      if (currentSeq === fetchSeqRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -172,13 +246,9 @@ export default function CompanyAssessments() {
     fetchTestData();
   }, [user?.id, profile?.id]);
 
-  // Handle Create Test (Submit to DB)
+  // Handle Create Test (Submit to DB with idempotency)
   const handleCreateTestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newJobId) {
-      toast.error('Please select a Job for this assessment');
-      return;
-    }
     if (!newTestTitle.trim()) {
       toast.error('Test title is required');
       return;
@@ -191,9 +261,21 @@ export default function CompanyAssessments() {
         toast.error(`Question ${i + 1} has empty text`);
         return;
       }
+      if (!q.options || q.options.length !== 4) {
+        toast.error(`Question ${i + 1} must have exactly 4 options`);
+        return;
+      }
       const hasEmptyOption = q.options.some(opt => !opt.trim());
       if (hasEmptyOption) {
         toast.error(`Question ${i + 1} has empty choice options`);
+        return;
+      }
+      if (q.correctOption === undefined || q.correctOption < 0 || q.correctOption > 3) {
+        toast.error(`Question ${i + 1} requires a valid correct answer selection`);
+        return;
+      }
+      if (!q.points || q.points <= 0) {
+        toast.error(`Question ${i + 1} points must be greater than 0`);
         return;
       }
     }
@@ -207,6 +289,7 @@ export default function CompanyAssessments() {
 
     try {
       setLoading(true);
+      setWorkflowError(null);
       const formattedQuestions = newQuestions.map(q => ({
         ...q,
         instructions: newInstructions,
@@ -215,49 +298,78 @@ export default function CompanyAssessments() {
         testTitle: newTestTitle
       }));
 
-      let res;
-      try {
-        res = await api.post('/assessments/company/create', {
-          jobId: parseInt(newJobId),
-          stageId: newStageId ? parseInt(newStageId) : undefined,
-          title: newTestTitle,
-          duration: newDuration,
-          cutoffScore: newCutoffScore,
-          questions: formattedQuestions,
-          instructions: newInstructions
-        });
-      } catch (err: any) {
-        // Fallback to legacy endpoint if required
-        res = await api.post('/company/tests', {
-          jobId: parseInt(newJobId),
-          stageId: newStageId ? parseInt(newStageId) : undefined,
-          questions: formattedQuestions
-        });
+      const createRes = await api.post('/assessments/company/create', {
+        clientRequestId: clientRequestIdRef.current,
+        title: newTestTitle,
+        duration: newDuration,
+        questions: formattedQuestions,
+        instructions: newInstructions
+      }, {
+        headers: {
+          'Idempotency-Key': clientRequestIdRef.current
+        }
+      });
+
+      if (!createRes.data?.success || !createRes.data?.data?.id) {
+        toast.error(createRes.data?.message || 'Failed to create Draft Assessment');
+        return;
       }
 
-      if (res.data?.success) {
-        toast.success('Assessment test created successfully!');
-        // Reset form
+      const createdId = String(createRes.data.data.id);
+      setCreatedAssessmentId(createdId);
+      setWorkflowState('DRAFT_CREATED');
+      await fetchTestData(); // Immediately preserve and display created draft in Manage Tests!
+
+      if (!newJobId) {
+        toast.success('Draft Assessment created successfully!');
+        clientRequestIdRef.current = crypto.randomUUID();
         setNewTestTitle('');
-        setNewQuestions([
-          {
-            id: `q-${Date.now()}`,
-            type: 'MCQ',
-            questionText: '',
-            options: ['', '', '', ''],
-            correctOption: 0,
-            points: 10,
-            difficulty: 'MEDIUM'
-          }
-        ]);
         setActiveTab('list');
-        fetchTestData();
-      } else {
-        toast.error(res.data?.message || 'Failed to create test');
+        return;
       }
-    } catch (err) {
+
+      // Step 2: Publish
+      try {
+        await api.post('/assessments/company/publish', { assessmentId: createdId });
+        setWorkflowState('PUBLISHED_UNASSIGNED');
+        await fetchTestData();
+      } catch (pubErr: any) {
+        const msg = pubErr.response?.data?.message || pubErr.message || 'Publish failed';
+        setWorkflowError(`Draft created, but Publish failed: ${msg}`);
+        toast.error(`Draft saved, but publishing failed: ${msg}`);
+        return;
+      }
+
+      // Step 3: Assign
+      try {
+        await api.post('/assessments/company/assign', {
+          assessmentId: createdId,
+          jobId: parseInt(newJobId),
+          stageId: newStageId ? parseInt(newStageId) : undefined,
+          cutoffScore: newCutoffScore
+        }, {
+          headers: { 'Idempotency-Key': `ASSIGN:${createdId}:${newJobId}` }
+        });
+        setWorkflowState('ASSIGNED');
+        toast.success('Assessment published and assigned successfully!');
+        clientRequestIdRef.current = crypto.randomUUID();
+        setWorkflowError(null);
+        setCreatedAssessmentId(null);
+        setWorkflowState('IDLE');
+        setNewTestTitle('');
+        setActiveTab('list');
+        await fetchTestData();
+      } catch (assignErr: any) {
+        const msg = assignErr.response?.data?.message || assignErr.message || 'Assignment failed';
+        setWorkflowState('ASSIGNMENT_FAILED');
+        setWorkflowError(`Published, but Job Assignment failed: ${msg}`);
+        toast.error(`Published, but job assignment failed: ${msg}`);
+        await fetchTestData();
+      }
+    } catch (err: any) {
       console.error('Error creating assessment test:', err);
-      toast.error('Failed to create assessment test.');
+      const errMsg = err.response?.data?.message || 'Failed to create assessment test.';
+      toast.error(errMsg);
     } finally {
       setLoading(false);
     }
@@ -682,6 +794,37 @@ export default function CompanyAssessments() {
             <p className="text-xs text-slate-500 font-medium">Link evaluation parameters and customize multiple-choice questions for specific jobs.</p>
           </div>
 
+          {workflowError && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-red-700 font-bold text-xs">
+                <AlertCircle size={16} />
+                <span>{workflowError} (Status: {workflowState})</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {workflowState === 'DRAFT_CREATED' && createdAssessmentId && (
+                  <button
+                    type="button"
+                    onClick={() => handleRetryPublish(createdAssessmentId)}
+                    disabled={loading}
+                    className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer"
+                  >
+                    Retry Publish
+                  </button>
+                )}
+                {(workflowState === 'PUBLISHED_UNASSIGNED' || workflowState === 'ASSIGNMENT_FAILED') && createdAssessmentId && (
+                  <button
+                    type="button"
+                    onClick={() => handleRetryAssign(createdAssessmentId)}
+                    disabled={loading}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer"
+                  >
+                    Retry Assignment
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Target Job Listing</label>
@@ -829,18 +972,14 @@ export default function CompanyAssessments() {
 
                 <div className="space-y-2">
                   <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">
-                    Answer Selections (Check the radio button next to the correct option)
+                    Option Choices (Exactly 4 choices)
                   </label>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {q.options.map((opt, optIndex) => (
                       <div key={optIndex} className="flex items-center bg-white rounded-xl border border-slate-100 px-3 py-1.5 gap-2.5">
-                        <input
-                          type="radio"
-                          name={`new-correct-for-q-${q.id}`}
-                          checked={q.correctOption === optIndex}
-                          onChange={() => updateNewQuestionField(qIndex, 'correctOption', optIndex)}
-                          className="text-indigo-600 cursor-pointer focus:ring-0 focus:outline-none"
-                        />
+                        <span className="w-6 h-6 rounded-lg bg-indigo-50 text-indigo-600 font-black text-xs flex items-center justify-center shrink-0">
+                          {String.fromCharCode(65 + optIndex)}
+                        </span>
                         <input
                           type="text"
                           placeholder={`Option ${String.fromCharCode(65 + optIndex)}`}
@@ -850,6 +989,33 @@ export default function CompanyAssessments() {
                           className="bg-transparent border-none outline-none w-full text-slate-800 text-xs font-semibold placeholder-slate-400 py-1"
                         />
                       </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-indigo-50/50 p-3.5 rounded-xl border border-indigo-100/60 space-y-2">
+                  <label className="text-[10px] font-black text-indigo-900 uppercase tracking-wider block">
+                    Correct Answer
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
+                    {[0, 1, 2, 3].map((optIndex) => (
+                      <label
+                        key={optIndex}
+                        className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all text-xs font-bold ${
+                          q.correctOption === optIndex
+                            ? 'bg-emerald-50 border-emerald-300 text-emerald-800 shadow-sm'
+                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name={`new-correct-for-q-${q.id || qIndex}`}
+                          checked={q.correctOption === optIndex}
+                          onChange={() => updateNewQuestionField(qIndex, 'correctOption', optIndex)}
+                          className="text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                        />
+                        <span className="font-extrabold">{String.fromCharCode(65 + optIndex)}</span> — <span className="truncate">{q.options[optIndex] || `Option ${String.fromCharCode(65 + optIndex)}`}</span>
+                      </label>
                     ))}
                   </div>
                 </div>
@@ -1161,17 +1327,13 @@ export default function CompanyAssessments() {
                       </div>
 
                       <div className="space-y-1.5">
-                        <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">Options Selections</label>
+                        <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">Option Choices (Exactly 4 choices)</label>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                           {q.options?.map((opt, optIdx) => (
                             <div key={optIdx} className="flex items-center bg-white rounded-xl border border-slate-100 px-2.5 py-1 gap-2">
-                              <input
-                                type="radio"
-                                name={`edit-correct-for-q-${q.id || qIndex}`}
-                                checked={q.correctOption === optIdx}
-                                onChange={() => updateEditQuestionField(qIndex, 'correctOption', optIdx)}
-                                className="text-indigo-600 cursor-pointer focus:ring-0 focus:outline-none"
-                              />
+                              <span className="w-5 h-5 rounded bg-indigo-50 text-indigo-600 font-black text-[10px] flex items-center justify-center shrink-0">
+                                {String.fromCharCode(65 + optIdx)}
+                              </span>
                               <input
                                 type="text"
                                 value={opt}
@@ -1180,6 +1342,33 @@ export default function CompanyAssessments() {
                                 className="bg-transparent border-none outline-none w-full text-slate-800 text-xs font-semibold py-0.5"
                               />
                             </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100/60 space-y-1.5">
+                        <label className="text-[9px] font-black text-indigo-900 uppercase tracking-wider block">
+                          Correct Answer
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-1.5">
+                          {[0, 1, 2, 3].map((optIdx) => (
+                            <label
+                              key={optIdx}
+                              className={`flex items-center gap-1.5 p-2 rounded-lg border cursor-pointer transition-all text-xs font-bold ${
+                                q.correctOption === optIdx
+                                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800 shadow-sm'
+                                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`edit-correct-for-q-${q.id || qIndex}`}
+                                checked={q.correctOption === optIdx}
+                                onChange={() => updateEditQuestionField(qIndex, 'correctOption', optIdx)}
+                                className="text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                              />
+                              <span className="font-extrabold">{String.fromCharCode(65 + optIdx)}</span> — <span className="truncate">{q.options[optIdx] || `Option ${String.fromCharCode(65 + optIdx)}`}</span>
+                            </label>
                           ))}
                         </div>
                       </div>

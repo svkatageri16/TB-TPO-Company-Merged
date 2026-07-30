@@ -59,6 +59,33 @@ function setupSQLite() {
     try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_notified_at DATETIME NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT DEFAULT NULL"); } catch (e) {}
     try { sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key)"); } catch (e) {}
+    try {
+      sqliteDb.exec(`
+        CREATE TABLE IF NOT EXISTS assessment_idempotency_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          company_id INTEGER NOT NULL,
+          operation VARCHAR(100) NOT NULL,
+          idempotency_key VARCHAR(255) NOT NULL,
+          request_hash VARCHAR(64) NOT NULL,
+          status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+          assessment_id INTEGER DEFAULT NULL,
+          response_json TEXT DEFAULT NULL,
+          locked_at DATETIME DEFAULT NULL,
+          completed_at DATETIME DEFAULT NULL,
+          failed_at DATETIME DEFAULT NULL,
+          failure_code VARCHAR(100) DEFAULT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          expires_at DATETIME DEFAULT NULL
+        )
+      `);
+      sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_comp_op_key ON assessment_idempotency_requests(company_id, operation, idempotency_key)");
+    } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_idempotency_requests ADD COLUMN locked_at DATETIME NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_idempotency_requests ADD COLUMN completed_at DATETIME NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_idempotency_requests ADD COLUMN failed_at DATETIME NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE assessment_idempotency_requests ADD COLUMN failure_code VARCHAR(100) NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE test_submissions ADD COLUMN assessment_version_id INTEGER NULL"); } catch (e) {}
     console.log("📦 SQLite Database initialized (WAL mode & busy_timeout=10s active)");
   }
 }

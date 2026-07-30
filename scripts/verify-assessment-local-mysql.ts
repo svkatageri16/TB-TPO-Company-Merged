@@ -19,6 +19,8 @@ async function verifyLocalMysql() {
 
   let connection: mysql.Connection | null = null;
   let schemaFailure = false;
+  let currentDb = 'N/A';
+  let verString = 'N/A';
 
   try {
     connection = await mysql.createConnection(dbConfig);
@@ -26,7 +28,7 @@ async function verifyLocalMysql() {
 
     // 1. SELECT DATABASE()
     const [dbRows]: any = await connection.query("SELECT DATABASE() as current_db");
-    const currentDb = dbRows[0]?.current_db;
+    currentDb = dbRows[0]?.current_db || 'N/A';
     console.log(`[QUERY] SELECT DATABASE() -> ${currentDb}`);
 
     if (currentDb !== 'talentbridge01') {
@@ -38,11 +40,11 @@ async function verifyLocalMysql() {
 
     // 2. SELECT VERSION() and @@version_comment
     const [verRows]: any = await connection.query("SELECT VERSION() as ver, @@version_comment as comment");
-    const verString = verRows[0]?.ver || '';
+    verString = verRows[0]?.ver || 'N/A';
     console.log(`[QUERY] SELECT VERSION() -> ${verString} (${verRows[0]?.comment})`);
 
     const majorVersion = parseInt(verString.split('.')[0]);
-    if (majorVersion < 8) {
+    if (isNaN(majorVersion) || majorVersion < 8) {
       console.log(`[FAIL] MySQL version ${verString} is below minimum requirement 8.0.x.`);
       schemaFailure = true;
     } else {
@@ -50,7 +52,7 @@ async function verifyLocalMysql() {
     }
 
     // 3. Existence of required tables, columns, indexes, FKs, constraints
-    const requiredTables = ['tests', 'test_submissions', 'assessment_tests', 'assessment_attempts'];
+    const requiredTables = ['tests', 'test_submissions', 'assessment_tests', 'assessment_attempts', 'assessment_idempotency_requests'];
     for (const tbl of requiredTables) {
       const [tableCheck]: any = await connection.query("SHOW TABLES LIKE ?", [tbl]);
       if (tableCheck.length === 0) {
@@ -68,6 +70,60 @@ async function verifyLocalMysql() {
       const [indexes]: any = await connection.query(`SHOW INDEX FROM \`${tbl}\``);
       const indexNames = Array.from(new Set(indexes.map((idx: any) => idx.Key_name)));
       console.log(`[INFO] Table '${tbl}' indexes: ${indexNames.join(', ')}`);
+    }
+
+    // Check assessment_idempotency_requests unique index
+    const [idemIndexes]: any = await connection.query("SHOW INDEX FROM `assessment_idempotency_requests` WHERE Key_name = 'idx_comp_op_key'");
+    if (idemIndexes.length > 0) {
+      console.log(`[PASS] Unique index 'idx_comp_op_key' exists on assessment_idempotency_requests(company_id, operation, idempotency_key).`);
+    } else {
+      console.log(`[FAIL] Unique index 'idx_comp_op_key' missing on assessment_idempotency_requests.`);
+      schemaFailure = true;
+    }
+
+    // Check attempt snapshot columns on test_submissions
+    const [subCols]: any = await connection.query("DESCRIBE `test_submissions`");
+    const subColNames = subCols.map((c: any) => c.Field);
+    const requiredSubCols = ['questions_json', 'cutoff_score', 'total_marks', 'duration', 'assignment_id'];
+    for (const sc of requiredSubCols) {
+      if (subColNames.includes(sc)) {
+        console.log(`[PASS] Column '${sc}' exists on test_submissions.`);
+      } else {
+        console.log(`[FAIL] Column '${sc}' missing on test_submissions.`);
+        schemaFailure = true;
+      }
+    }
+
+    // Check integrity event attempt_id column
+    const [eventCols]: any = await connection.query("DESCRIBE `test_submission_events`");
+    const eventColNames = eventCols.map((c: any) => c.Field);
+    if (eventColNames.includes('attempt_id')) {
+      console.log(`[PASS] Column 'attempt_id' exists on test_submission_events.`);
+    } else {
+      console.log(`[FAIL] Column 'attempt_id' missing on test_submission_events.`);
+      schemaFailure = true;
+    }
+
+    // Check ambiguous legacy events remain unresolved (attempt_id IS NULL for multi-attempt apps)
+    const [ambiguousEvents]: any = await connection.query(`
+      SELECT tse.id
+      FROM test_submission_events tse
+      JOIN (
+        SELECT application_id FROM test_submissions GROUP BY application_id HAVING COUNT(*) > 1
+      ) multi ON tse.application_id = multi.application_id
+      WHERE tse.attempt_id IS NULL
+    `);
+    console.log(`[INFO] Ambiguous legacy events count (attempt_id IS NULL): ${ambiguousEvents.length}`);
+
+    // Check direct-create job assignment data is clean (no DRAFT tests directly bound to job_id)
+    const [invalidDirectCreates]: any = await connection.query(`
+      SELECT id FROM tests WHERE status = 'DRAFT' AND job_id IS NOT NULL
+    `);
+    if (invalidDirectCreates.length > 0) {
+      console.log(`[FAIL] Found ${invalidDirectCreates.length} invalid direct-create draft tests bound to job_id.`);
+      schemaFailure = true;
+    } else {
+      console.log(`[PASS] No invalid direct-create draft tests bound to job_id.`);
     }
 
     // Mismatch audit query
@@ -114,17 +170,32 @@ async function verifyLocalMysql() {
     }
 
     if (schemaFailure) {
-      console.log("[SUMMARY] Verification Completed with SCHEMA ERRORS.");
-      process.exit(1);
+      console.log("\nMYSQL_VERIFY_STATUS: FAILED");
+      console.log("MYSQL_VERIFY_EXIT_CODE: 3");
+      console.log(`DATABASE: ${currentDb}`);
+      console.log(`MYSQL_VERSION: ${verString}`);
+      console.log("SCHEMA_VALID: false");
+      process.exitCode = 3;
+      process.exit(3);
     } else {
-      console.log("[SUMMARY] Local MySQL Verification Passed Successfully.");
+      console.log("\nMYSQL_VERIFY_STATUS: VERIFIED");
+      console.log("MYSQL_VERIFY_EXIT_CODE: 0");
+      console.log(`DATABASE: ${currentDb}`);
+      console.log(`MYSQL_VERSION: ${verString}`);
+      console.log("SCHEMA_VALID: true");
+      process.exitCode = 0;
       process.exit(0);
     }
 
   } catch (error: any) {
     console.log(`[NOT VERIFIED] Local MySQL unavailable or connection failed: ${error.message}`);
-    // Exit code 0 so process runner completes gracefully when MySQL server is not locally running
-    process.exit(0);
+    console.log("\nMYSQL_VERIFY_STATUS: NOT VERIFIED");
+    console.log("MYSQL_VERIFY_EXIT_CODE: 2");
+    console.log(`DATABASE: ${currentDb}`);
+    console.log(`MYSQL_VERSION: ${verString}`);
+    console.log("SCHEMA_VALID: false");
+    process.exitCode = 2;
+    process.exit(2);
   } finally {
     if (connection) {
       await connection.end();

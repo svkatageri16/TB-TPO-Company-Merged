@@ -49,6 +49,30 @@ END$$
 
 DELIMITER ;
 
+-- 1. Create assessment_idempotency_requests table if not existing
+CREATE TABLE IF NOT EXISTS assessment_idempotency_requests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    operation VARCHAR(100) NOT NULL,
+    idempotency_key VARCHAR(255) NOT NULL,
+    request_hash VARCHAR(64) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+    assessment_id INT DEFAULT NULL,
+    response_json TEXT DEFAULT NULL,
+    locked_at TIMESTAMP NULL DEFAULT NULL,
+    completed_at TIMESTAMP NULL DEFAULT NULL,
+    failed_at TIMESTAMP NULL DEFAULT NULL,
+    failure_code VARCHAR(100) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NULL DEFAULT NULL,
+    UNIQUE KEY idx_comp_op_key (company_id, operation, idempotency_key)
+);
+CALL AddColumnIfNotExists('assessment_idempotency_requests', 'locked_at', 'TIMESTAMP NULL DEFAULT NULL');
+CALL AddColumnIfNotExists('assessment_idempotency_requests', 'completed_at', 'TIMESTAMP NULL DEFAULT NULL');
+CALL AddColumnIfNotExists('assessment_idempotency_requests', 'failed_at', 'TIMESTAMP NULL DEFAULT NULL');
+CALL AddColumnIfNotExists('assessment_idempotency_requests', 'failure_code', 'VARCHAR(100) DEFAULT NULL');
+
 -- 1. Ensure tests table has assessment metadata columns
 CALL AddColumnIfNotExists('tests', 'assessment_id', 'INT DEFAULT NULL');
 CALL AddColumnIfNotExists('tests', 'company_id', 'INT DEFAULT NULL');
@@ -60,6 +84,7 @@ CALL AddColumnIfNotExists('tests', 'version', 'INT DEFAULT 1');
 
 -- 2. Ensure test_submissions table has job_id, assignment_id, score and proctoring tracking columns
 CALL AddColumnIfNotExists('test_submissions', 'assignment_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('test_submissions', 'assessment_version_id', 'INT DEFAULT NULL');
 CALL AddColumnIfNotExists('test_submissions', 'job_id', 'INT DEFAULT NULL');
 CALL AddColumnIfNotExists('test_submissions', 'application_id', 'INT DEFAULT NULL');
 CALL AddColumnIfNotExists('test_submissions', 'attempt_number', 'INT DEFAULT 1');
@@ -74,12 +99,25 @@ CALL AddColumnIfNotExists('test_submissions', 'status', 'VARCHAR(50) DEFAULT \'S
 
 CREATE TABLE IF NOT EXISTS test_submission_events (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    attempt_id INT DEFAULT NULL,
     application_id INT NOT NULL,
     student_id INT DEFAULT NULL,
     event_type VARCHAR(100) NOT NULL,
     idempotency_key VARCHAR(255) DEFAULT NULL UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CALL AddColumnIfNotExists('test_submission_events', 'attempt_id', 'INT DEFAULT NULL');
+
+-- Unambiguous legacy attempt_id backfill for test_submission_events where exactly one attempt exists
+UPDATE test_submission_events tse
+JOIN (
+    SELECT application_id, MIN(id) as attempt_id, COUNT(*) as cnt
+    FROM test_submissions
+    GROUP BY application_id
+    HAVING cnt = 1
+) unambiguous ON tse.application_id = unambiguous.application_id
+SET tse.attempt_id = unambiguous.attempt_id
+WHERE tse.attempt_id IS NULL;
 
 -- Backfill job_id and assignment_id safely from job_applications & tests to resolve nulls and correct non-null mismatches from authoritative application row
 UPDATE test_submissions ts 
