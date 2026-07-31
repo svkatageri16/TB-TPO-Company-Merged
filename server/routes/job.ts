@@ -2071,7 +2071,7 @@ const handleUndoDecision = async (req: any, res: any) => {
         WHERE id = ? AND status IN ('SELECTED', 'REJECTED')
       `, [newStatus, restoredStageId, initialNotificationStatus, appId]);
 
-      const affected = updateRes?.affectedRows ?? (Array.isArray(updateRes) && updateRes[0] ? updateRes[0].affectedRows : 0);
+      const affected = updateRes?.changes ?? updateRes?.affectedRows ?? (Array.isArray(updateRes) && updateRes[0] ? (updateRes[0].changes ?? updateRes[0].affectedRows) : 0);
       if (!affected || affected === 0) {
         throw new Error("Candidate status was modified or is no longer in Selected/Rejected state.");
       }
@@ -2108,28 +2108,32 @@ const handleUndoDecision = async (req: any, res: any) => {
           VALUES (?, ?, ?, 'INFO', ?)
         `, [app.student_user_id, title, message, idempotencyKey]);
 
-        await db.query(`
-          UPDATE job_applications
-          SET rejection_notification_status = 'SENT',
-              rejection_notified_at = NOW()
-          WHERE id = ?
-        `, [appId]);
-      } catch (e: any) {
-        const isDup = e.code === 'ER_DUP_ENTRY' || String(e.message || '').includes('UNIQUE') || String(e.message || '').includes('duplicate');
-        if (isDup) {
+        try {
           await db.query(`
             UPDATE job_applications
             SET rejection_notification_status = 'SENT',
-                rejection_notified_at = NOW()
+                rejection_notified_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `, [appId]);
-        } else {
-          await db.query(`
-            UPDATE job_applications
-            SET rejection_notification_status = 'FAILED'
-            WHERE id = ?
-          `, [appId]);
-        }
+        } catch (e) {}
+      } catch (e: any) {
+        try {
+          const isDup = e.code === 'ER_DUP_ENTRY' || String(e.message || '').includes('UNIQUE') || String(e.message || '').includes('duplicate');
+          if (isDup) {
+            await db.query(`
+              UPDATE job_applications
+              SET rejection_notification_status = 'SENT',
+                  rejection_notified_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `, [appId]);
+          } else {
+            await db.query(`
+              UPDATE job_applications
+              SET rejection_notification_status = 'FAILED'
+              WHERE id = ?
+            `, [appId]);
+          }
+        } catch (e2) {}
       }
 
       if (app.email) {
@@ -2167,6 +2171,7 @@ const handleUndoDecision = async (req: any, res: any) => {
   }
 };
 
+router.post("/applications/undo-decision", authenticate, handleUndoDecision);
 router.post("/applications/:applicationId/undo-decision", authenticate, handleUndoDecision);
 router.post("/undo-decision", authenticate, handleUndoDecision);
 
@@ -2283,7 +2288,7 @@ const handleUndoStage = async (req: any, res: any) => {
     await db.transaction(async (tx) => {
       // Re-verify and lock application row in transaction
       const [lockedApps]: any = await tx.query(
-        "SELECT id, current_stage_id, status FROM job_applications WHERE id = ? FOR UPDATE",
+        "SELECT id, current_stage_id, status FROM job_applications WHERE id = ?",
         [appId]
       );
       if (!lockedApps || lockedApps.length === 0) {
@@ -2314,7 +2319,7 @@ const handleUndoStage = async (req: any, res: any) => {
         [targetStageId, newStatus, appId, lockedApp.current_stage_id]
       );
 
-      const affected = updateRes?.affectedRows ?? (Array.isArray(updateRes) && updateRes[0] ? updateRes[0].affectedRows : 0);
+      const affected = updateRes?.changes ?? updateRes?.affectedRows ?? (Array.isArray(updateRes) && updateRes[0] ? (updateRes[0].changes ?? updateRes[0].affectedRows) : 0);
       if (!affected || affected === 0) {
         const err: any = new Error("Application state changed concurrently.");
         err.statusCode = 409;
@@ -2366,6 +2371,7 @@ const handleUndoStage = async (req: any, res: any) => {
   }
 };
 
+router.post("/applications/undo-stage", authenticate, handleUndoStage);
 router.post("/applications/:applicationId/undo-stage", authenticate, handleUndoStage);
 router.post("/undo-stage", authenticate, handleUndoStage);
 

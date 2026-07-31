@@ -57,7 +57,7 @@ export function CandidateTable({ applicants, onViewCandidate, onOpenHistory }: C
           </thead>
           <tbody className="divide-y divide-slate-100">
             {applicants.map((app, i) => {
-              const violationCount = app.latest_test_violations || 0;
+              const violationCount = Number(app.latest_test_violations_count ?? app.latest_test_violations ?? 0);
               const talentScore = Math.round(app.talent_score || 0);
               
               const getScoreBand = () => {

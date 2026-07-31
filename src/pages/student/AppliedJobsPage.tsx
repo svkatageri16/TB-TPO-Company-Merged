@@ -726,11 +726,12 @@ export function AppliedJobsPage() {
 }
 
 function TestEngineModal({ test, studentId, applicationId, onClose }: { test: any, studentId: any, applicationId: any, onClose: () => void }) {
+   const [attemptId, setAttemptId] = useState<number | null>(null);
    const [questions, setQuestions] = useState<any[]>([]);
    const [loading, setLoading] = useState(true);
    const [currentIdx, setCurrentIdx] = useState(0);
    const [answers, setAnswers] = useState<any>({});
-   const [timeLeft, setTimeLeft] = useState(test.duration_minutes * 60);
+   const [timeLeft, setTimeLeft] = useState((test.duration_minutes || 30) * 60);
    const [tabSwitches, setTabSwitches] = useState(0);
    const [violationCount, setViolationCount] = useState(0);
    const [isSubmitting, setIsSubmitting] = useState(false);
@@ -769,6 +770,14 @@ function TestEngineModal({ test, studentId, applicationId, onClose }: { test: an
                return newCount;
             });
             setViolationCount(prev => prev + 1);
+            if (attemptId) {
+               api.post('/assessments/student/event', {
+                  applicationId: applicationId || test.application_id || test.id,
+                  attemptId,
+                  eventType: 'TAB_SWITCH',
+                  idempotencyKey: `evt-${attemptId}-${Date.now()}`
+               }).catch(() => {});
+            }
          }
       };
 
@@ -796,47 +805,33 @@ function TestEngineModal({ test, studentId, applicationId, onClose }: { test: an
          document.removeEventListener("visibilitychange", handleVisibilityChange);
          document.removeEventListener("fullscreenchange", handleFullscreenChange);
       };
-   }, [hasStarted]);
+   }, [hasStarted, attemptId]);
 
    const fetchQuestions = async () => {
       try {
-         console.log("Test Engine: Fetching questions for test", test);
-         const { data } = await api.get(`/companies/tests/${test.job_id}`);
+         console.log("Test Engine: Starting assessment for test", test);
+         const appId = applicationId || test.application_id || test.id;
+         const { data } = await api.post("/assessments/student/start", { applicationId: appId });
          console.log("Test Engine: API Response", data);
 
-         if (data.success && Array.isArray(data.data)) {
-            const currentStageId = Number(test.stage_id);
-            let stageQs = data.data.filter((q: any) => {
-               const qStageId = Number(q.stage_id);
-               return qStageId === currentStageId || qStageId === -1;
+         if (data.success) {
+            setAttemptId(data.attemptId);
+            if (data.durationMinutes) {
+               setTimeLeft(data.durationMinutes * 60);
+            }
+            const qs = data.questions || [];
+            const processedQuestions = [...qs].map(q => {
+               let opts: any = {};
+               try {
+                  const optsSource = q.options_json || q.options;
+                  opts = typeof optsSource === 'string' ? JSON.parse(optsSource) : (optsSource || {});
+               } catch (e) { opts = {}; }
+               const shuffledOptions = Object.entries(opts);
+               return { ...q, _shuffledOptions: shuffledOptions };
             });
             
-            // Fallback: If no questions for this specific stage, use all available questions for the job
-            if (stageQs.length === 0 && data.data.length > 0) {
-               console.warn("No questions for this specific stage, falling back to all job questions");
-               stageQs = data.data;
-            }
-
-            console.log("Test Engine: Final Filtered Qs", stageQs);
-            
-            // Randomization: Shuffle questions and prep options
-            const shuffledQuestions = [...stageQs]
-               .sort(() => Math.random() - 0.5)
-               .map(q => {
-                  let opts: any = {};
-                  try {
-                     const optsSource = q.options_json || q.options;
-                     opts = typeof optsSource === 'string' ? JSON.parse(optsSource) : (optsSource || {});
-                  } catch (e) { opts = {}; }
-                  
-                  // Pre-shuffle options
-                  const shuffledOptions = Object.entries(opts).sort(() => Math.random() - 0.5);
-                  return { ...q, _shuffledOptions: shuffledOptions };
-               });
-            
-            setQuestions(shuffledQuestions);
-            
-            if (shuffledQuestions.length === 0) {
+            setQuestions(processedQuestions);
+            if (processedQuestions.length === 0) {
                toast.error(`No questions found for ${test.stage_name || 'this stage'}.`);
             }
          }
@@ -877,18 +872,13 @@ function TestEngineModal({ test, studentId, applicationId, onClose }: { test: an
             document.exitFullscreen().catch(() => {});
          }
 
-         const { data } = await api.post("/jobs/applications/submit-test", {
-            applicationId,
-            stageId: test.stage_id,
-            answers,
-            tabSwitches,
-            violationCount,
-            isAutoSubmitted: isAuto
+         const { data } = await api.post(`/assessments/student/submit/${attemptId}`, {
+            answers
          });
 
          if (data.success) {
             setTestSuccess(true);
-            toast.success(data.passed ? "Congratulations! You passed and moved to the next stage." : "Test submitted.");
+            toast.success(data.isPassed ? "Congratulations! You passed and moved to the next stage." : "Test submitted.");
          }
       } catch (e) {
          toast.error("Failed to submit test");

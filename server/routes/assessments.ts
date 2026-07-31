@@ -714,6 +714,9 @@ router.post("/tests/:id/publish", authenticate, authorize(["TPO"]), async (req: 
 // -------------------------------------------------------------
 router.post("/student/start", authenticate, authorize(["STUDENT"]), async (req: any, res) => {
   try {
+    if (req.body.applicationId) {
+      return handleCompanyStudentStart(req, res);
+    }
     const { latitude, longitude, accuracy, ip_address, browser, device } = req.body;
     const assessment_id = req.body.assessment_id || req.body.testId;
 
@@ -943,15 +946,22 @@ router.post("/student/submit/:attemptId", authenticate, authorize(["STUDENT"]), 
   try {
     const attemptId = req.params.attemptId;
 
-    // Check attempt status
+    // Check if this is a Company Hiring submission in test_submissions
+    const [subRows]: any = await db.query("SELECT id FROM test_submissions WHERE id = ? OR application_id = ?", [attemptId, attemptId]).catch(() => []);
+    if (subRows && subRows.length > 0) {
+      const companyResult = await submitAssessmentAttempt(attemptId, req.user, req.body.answers);
+      return res.status(companyResult.status).json(companyResult.data);
+    }
+
+    // Check TPO attempt status
     const [attempts]: any = await db.query(`
-      SELECT a.*, t.max_marks, t.passing_marks, t.negative_marking
+      SELECT a.*, COALESCE(t.total_marks, 100) as max_marks
       FROM assessment_attempts a
       JOIN assessment_tests t ON a.assessment_id = t.id
       WHERE a.id = ?
-    `, [attemptId]);
+    `, [attemptId]).catch(() => []);
 
-    if (attempts.length === 0) return res.status(404).json({ success: false, message: "Attempt not found" });
+    if (!attempts || attempts.length === 0) return res.status(404).json({ success: false, message: "Attempt not found" });
 
     const attempt = attempts[0];
     if (attempt.status === "COMPLETED") {
@@ -1734,7 +1744,8 @@ No extra characters, no markdown codeblock tags (like \`\`\`json), just the raw 
 
 // Helper to resolve company ID for user
 async function resolveCompanyIdForUser(user: any) {
-  if (user.role === "COMPANY_HR" || user.role === "COMPANY_SUB_HR" || user.role === "COMPANY_ADMIN") {
+  if (!user) return null;
+  if (user.role === "COMPANY" || user.role === "COMPANY_HR" || user.role === "COMPANY_SUB_HR" || user.role === "COMPANY_ADMIN") {
     const [profiles]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [user.id || user.userId]);
     if (profiles.length > 0) return profiles[0].id;
 
@@ -1744,7 +1755,7 @@ async function resolveCompanyIdForUser(user: any) {
   return null;
 }
 
-// GET /api/assessments/company/tests (Manage Tests definition endpoint)
+// GET /api/assessments/company/tests
 router.get("/company/tests", authenticate, async (req: any, res) => {
   try {
     const companyId = await resolveCompanyIdForUser(req.user);
@@ -1755,64 +1766,54 @@ router.get("/company/tests", authenticate, async (req: any, res) => {
     const [profiles]: any = await db.query("SELECT company_name FROM company_profiles WHERE id = ?", [companyId]);
     const companyName = profiles[0]?.company_name || "Company";
 
-    const [jobs]: any = await db.query("SELECT id, title FROM jobs WHERE company_id = ?", [companyId]);
-    const jobIds = jobs.map((j: any) => j.id);
-    const jobMap = new Map(jobs.map((j: any) => [j.id, j.title]));
-
-    let testsList: any[] = [];
-    if (jobIds.length > 0) {
-      const placeholders = jobIds.map(() => "?").join(",");
-      const [rows]: any = await db.query(`
-        SELECT * FROM tests WHERE job_id IN (${placeholders}) OR company_id = ? ORDER BY id DESC
-      `, [...jobIds, companyId]);
-      testsList = rows;
-    } else {
-      const [rows]: any = await db.query(`
-        SELECT * FROM tests WHERE company_id = ? ORDER BY id DESC
-      `, [companyId]);
-      testsList = rows;
-    }
-
-    try {
-      const [atRows]: any = await db.query(`
-        SELECT * FROM assessment_tests WHERE company_id = ? ORDER BY id DESC
-      `, [companyId]);
-      for (const at of atRows) {
-        if (!testsList.some(t => t.id === at.id || t.title === at.title)) {
-          testsList.push(at);
-        }
-      }
-    } catch (e) {}
+    // Query definitions from company_assessment_definitions
+    const [defs]: any = await db.query(`
+      SELECT * FROM company_assessment_definitions
+      WHERE company_id = ?
+      ORDER BY id DESC
+    `, [companyId]);
 
     const results: any[] = [];
 
-    for (const test of testsList) {
-      const qs = typeof test.questions_json === "string" ? JSON.parse(test.questions_json) : (test.questions_json || []);
-      const questionsCount = qs.length;
+    for (const def of defs) {
+      const qs = typeof def.questions_json === "string" ? JSON.parse(def.questions_json) : (def.questions_json || []);
+
+      // Find assignments
+      const [assignments]: any = await db.query(`
+        SELECT caa.*, j.title as job_title, js.stage_name
+        FROM company_assessment_assignments caa
+        JOIN jobs j ON caa.job_id = j.id
+        LEFT JOIN job_stages js ON caa.stage_id = js.id
+        WHERE caa.definition_version_id = ? AND caa.status = 'ACTIVE'
+      `, [def.id]);
 
       let submissionsCount = 0;
       let avgScore = 0;
-      if (test.job_id) {
-        const [submissions]: any = await db.query(`
+      let assignedCount = 0;
+
+      if (assignments.length > 0) {
+        const assignmentIds = assignments.map((a: any) => a.id);
+        const placeholders = assignmentIds.map(() => "?").join(",");
+
+        const [subStats]: any = await db.query(`
           SELECT COUNT(*) as count, AVG(score) as avg_score
           FROM test_submissions
-          WHERE job_id = ?
-        `, [test.job_id]);
-        submissionsCount = submissions[0]?.count || 0;
-        avgScore = Math.round(submissions[0]?.avg_score || 0);
-      }
+          WHERE assignment_id IN (${placeholders})
+        `, assignmentIds);
+        submissionsCount = subStats[0]?.count || 0;
+        avgScore = Math.round(subStats[0]?.avg_score || 0);
 
-      let assignedCount = 0;
-      if (test.job_id) {
-        const [assigned]: any = await db.query(`
+        const jobIds = [...new Set(assignments.map((a: any) => a.job_id))];
+        const jobPlaceholders = jobIds.map(() => "?").join(",");
+        const [appStats]: any = await db.query(`
           SELECT COUNT(*) as count FROM job_applications
-          WHERE job_id = ? AND status != 'REJECTED' AND status != 'CANCELLED'
-        `, [test.job_id]);
-        assignedCount = assigned[0]?.count || 0;
+          WHERE job_id IN (${jobPlaceholders}) AND status != 'REJECTED' AND status != 'CANCELLED'
+        `, jobIds);
+        assignedCount = appStats[0]?.count || 0;
       }
 
       const mappedQuestions = qs.map((q: any, i: number) => ({
-        id: q.id || `q-${test.id}-${i}`,
+        id: q.id || `q-${def.id}-${i}`,
         type: q.type || 'MCQ',
         questionText: q.questionText || q.question || q.text || '',
         options: Array.isArray(q.options) ? q.options : (q.options_json || ['', '', '', '']),
@@ -1821,28 +1822,36 @@ router.get("/company/tests", authenticate, async (req: any, res) => {
         difficulty: q.difficulty || 'MEDIUM'
       }));
 
-      const totalMarks = mappedQuestions.reduce((acc: number, q: any) => acc + (q.points || 10), 0) || 100;
-      const jobTitle = test.job_id ? (jobMap.get(test.job_id) || "Job Assessment") : "General / Unassigned";
+      const totalMarks = def.total_marks || mappedQuestions.reduce((acc: number, q: any) => acc + (q.points || 10), 0) || 100;
+      const primaryJobTitle = assignments.length > 0 ? assignments[0].job_title : "Unassigned";
 
       results.push({
-        id: String(test.id),
-        job_id: test.job_id || null,
-        job_title: jobTitle,
-        title: test.title || qs[0]?.testTitle || `${jobTitle} Assessment`,
+        id: String(def.id),
+        job_id: assignments.length > 0 ? assignments[0].job_id : null,
+        job_title: primaryJobTitle,
+        title: def.title,
+        description: def.description || '',
         created_by: companyName,
-        created_date: test.created_at ? new Date(test.created_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-        questions_count: questionsCount,
-        duration: test.duration || qs[0]?.duration || 30,
-        cutoff_score: test.cutoff_score !== undefined ? test.cutoff_score : 40,
+        created_date: def.created_at ? new Date(def.created_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+        questions_count: qs.length,
+        duration: def.duration_minutes || 30,
+        cutoff_score: def.cutoff_score !== undefined ? Number(def.cutoff_score) : 40,
         total_marks: totalMarks,
-        status: test.status || 'PUBLISHED',
-        version: test.version || 1,
+        status: def.status || 'DRAFT',
+        version: def.version || 1,
         assigned_count: assignedCount,
         submissions_count: submissionsCount,
         average_score: avgScore,
         questions: mappedQuestions,
-        instructions: qs[0]?.instructions || test.instructions || "Please answer all questions carefully.",
-        stage_id: test.stage_id || null
+        instructions: "Please answer all questions carefully.",
+        assignments: assignments.map((a: any) => ({
+          id: a.id,
+          jobId: a.job_id,
+          jobTitle: a.job_title,
+          stageId: a.stage_id,
+          stageName: a.stage_name,
+          cutoffScore: Number(a.cutoff_score)
+        }))
       });
     }
 
@@ -1853,17 +1862,12 @@ router.get("/company/tests", authenticate, async (req: any, res) => {
   }
 });
 
-// GET /api/assessments/company/history (Candidate History & Scores endpoint)
+// GET /api/assessments/company/history
 router.get("/company/history", authenticate, async (req: any, res) => {
   try {
     const companyId = await resolveCompanyIdForUser(req.user);
     if (!companyId) {
       return res.json({ success: true, data: [], pagination: { total: 0, page: 1, limit: 20 } });
-    }
-
-    // Check if client expects tests definitions (fallback backwards compatibility if no query filters)
-    if (req.headers['x-view-mode'] === 'tests') {
-      return res.redirect('/api/assessments/company/tests');
     }
 
     const { jobId, searchQuery, status, page = 1, limit = 20 } = req.query;
@@ -1885,20 +1889,22 @@ router.get("/company/history", authenticate, async (req: any, res) => {
         ts.violations_count,
         ts.status as submission_status,
         ts.submitted_at,
-        ts.created_at as started_at,
+        ts.submitted_at as started_at,
         ts.assessment_version,
         sp.full_name as candidate_name,
         u.email as candidate_email,
         j.title as job_title,
-        t.id as test_id,
-        t.title as test_title,
-        t.questions_json
+        cad.id as definition_id,
+        cad.title as test_title,
+        ts.questions_json
       FROM test_submissions ts
-      JOIN jobs j ON ts.job_id = j.id
+      JOIN company_assessment_assignments caa ON ts.assignment_id = caa.id
+      JOIN company_assessment_definitions cad ON ts.assessment_version_id = cad.id
+      JOIN job_applications a ON ts.application_id = a.id
+      JOIN jobs j ON caa.job_id = j.id
       JOIN student_profiles sp ON ts.student_id = sp.id
       JOIN users u ON sp.user_id = u.id
-      LEFT JOIN tests t ON ts.assignment_id = t.id OR t.job_id = j.id
-      WHERE j.company_id = ?
+      WHERE caa.company_id = ?
     `;
 
     const params: any[] = [companyId];
@@ -1927,71 +1933,13 @@ router.get("/company/history", authenticate, async (req: any, res) => {
 
     const [rows]: any = await db.query(sql, params);
 
-    // If rows empty and no query params were passed, fall back to returning test definitions to preserve legacy UI
-    if ((!rows || rows.length === 0) && !jobId && !searchQuery && (!status || status === 'all')) {
-      const [profiles]: any = await db.query("SELECT company_name FROM company_profiles WHERE id = ?", [companyId]);
-      const companyName = profiles[0]?.company_name || "Company";
-      const [jobs]: any = await db.query("SELECT id, title FROM jobs WHERE company_id = ?", [companyId]);
-      const jobIds = jobs.map((j: any) => j.id);
-      const jobMap = new Map(jobs.map((j: any) => [j.id, j.title]));
-
-      let testsList: any[] = [];
-      if (jobIds.length > 0) {
-        const placeholders = jobIds.map(() => "?").join(",");
-        const [tRows]: any = await db.query(`
-          SELECT * FROM tests WHERE job_id IN (${placeholders}) OR company_id = ? ORDER BY id DESC
-        `, [...jobIds, companyId]);
-        testsList = tRows;
-      } else {
-        const [tRows]: any = await db.query(`
-          SELECT * FROM tests WHERE company_id = ? ORDER BY id DESC
-        `, [companyId]);
-        testsList = tRows;
-      }
-
-      const results: any[] = [];
-      for (const test of testsList) {
-        const qs = typeof test.questions_json === "string" ? JSON.parse(test.questions_json) : (test.questions_json || []);
-        const mappedQuestions = qs.map((q: any, i: number) => ({
-          id: q.id || `q-${test.id}-${i}`,
-          type: q.type || 'MCQ',
-          questionText: q.questionText || q.question || q.text || '',
-          options: Array.isArray(q.options) ? q.options : (q.options_json || ['', '', '', '']),
-          correctOption: q.correctOption !== undefined ? Number(q.correctOption) : 0,
-          points: Number(q.points || q.marks) || 10,
-          difficulty: q.difficulty || 'MEDIUM'
-        }));
-        const totalMarks = mappedQuestions.reduce((acc: number, q: any) => acc + (q.points || 10), 0) || 100;
-        const jobTitle = test.job_id ? (jobMap.get(test.job_id) || "Job Assessment") : "General / Unassigned";
-        results.push({
-          id: String(test.id),
-          job_id: test.job_id || null,
-          job_title: jobTitle,
-          title: test.title || qs[0]?.testTitle || `${jobTitle} Assessment`,
-          created_by: companyName,
-          created_date: test.created_at ? new Date(test.created_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-          questions_count: qs.length,
-          duration: test.duration || qs[0]?.duration || 30,
-          cutoff_score: test.cutoff_score !== undefined ? test.cutoff_score : 40,
-          total_marks: totalMarks,
-          status: test.status || 'PUBLISHED',
-          version: test.version || 1,
-          questions: mappedQuestions,
-          instructions: qs[0]?.instructions || test.instructions || "Please answer all questions carefully.",
-          stage_id: test.stage_id || null
-        });
-      }
-      return res.json({ success: true, data: results, pagination: { total: results.length, page: pageNum, limit: limitNum } });
-    }
-
     const attemptsList = await Promise.all((rows || []).map(async (row: any) => {
       const qs = typeof row.questions_json === "string" ? JSON.parse(row.questions_json) : (row.questions_json || []);
-      const testTitle = row.test_title || qs[0]?.testTitle || `${row.job_title} Assessment`;
+      const testTitle = row.test_title || `${row.job_title} Assessment`;
       const totalScore = row.total_marks || (qs.length * 10) || 100;
-      const cutoff = row.cutoff_score !== undefined ? row.cutoff_score : 40;
+      const cutoff = row.cutoff_score !== undefined ? Number(row.cutoff_score) : 40;
       const isPassed = row.passed === 1 || row.score >= cutoff;
 
-      // Calculate attempt-specific violations count strictly using attempt_id
       let eventCount = row.violations_count || 0;
       try {
         const [evRows]: any = await db.query("SELECT COUNT(*) as count FROM test_submission_events WHERE attempt_id = ?", [row.attempt_id]);
@@ -2010,7 +1958,6 @@ router.get("/company/history", authenticate, async (req: any, res) => {
         candidateEmail: row.candidate_email,
         assessmentTitle: testTitle,
         version: row.assessment_version || 1,
-        attemptNumber: 1,
         score: Math.round(row.score || 0),
         totalMarks: totalScore,
         percentage: Math.round(row.percentage || ((row.score / totalScore) * 100) || 0),
@@ -2039,7 +1986,7 @@ router.get("/company/history", authenticate, async (req: any, res) => {
   }
 });
 
-// GET /api/assessments/company/attempts (Alias to candidate attempt history)
+// GET /api/assessments/company/attempts (Alias)
 router.get("/company/attempts", authenticate, async (req: any, res) => {
   return res.redirect(307, "/api/assessments/company/history");
 });
@@ -2055,26 +2002,28 @@ function computeAssessmentCreateHash(body: any): string {
   const payload = {
     title: (body.title || '').trim(),
     description: (body.description || '').trim(),
-    instructions: (body.instructions || '').trim(),
-    duration: Number(body.duration) || 30,
+    duration: Number(body.duration || body.duration_minutes) || 30,
     questions: normalizedQuestions
   };
 
   return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
-// POST /api/assessments/company/create (Draft Assessment definition creation with database-backed idempotency)
+// POST /api/assessments/company/create
 router.post("/company/create", authenticate, async (req: any, res) => {
   const companyId = await resolveCompanyIdForUser(req.user);
+  if (!companyId) {
+    return res.status(403).json({ success: false, message: "Company profile not found" });
+  }
 
   try {
     const {
       jobId, job_id, stageId, stage_id, cutoffScore, cutoff_score,
       attemptsAllowed, availabilityStart, availabilityEnd,
-      title, description, instructions, duration = 30, questions
+      title, description, duration = 30, questions
     } = req.body;
 
-    // Reject prohibited assignment fields
+    // Reject assignment fields in creation
     if (
       jobId !== undefined || job_id !== undefined ||
       stageId !== undefined || stage_id !== undefined ||
@@ -2085,7 +2034,7 @@ router.post("/company/create", authenticate, async (req: any, res) => {
       return res.status(400).json({
         success: false,
         code: "ASSIGNMENT_FIELDS_NOT_ALLOWED",
-        message: "Create the Draft Assessment first, publish it, and assign it through the Assessment assignment endpoint."
+        message: "Job/stage assignment fields are not permitted during assessment creation. Create the Draft Assessment first, publish it, and assign it through the Assessment assignment endpoint."
       });
     }
 
@@ -2093,267 +2042,12 @@ router.post("/company/create", authenticate, async (req: any, res) => {
       return res.status(400).json({ success: false, message: "At least one question is required" });
     }
 
-    // Validate every question before database operations
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i];
       const qText = q.questionText || q.question || q.text || '';
       if (!qText.trim()) {
         return res.status(400).json({ success: false, message: `Question ${i + 1} text cannot be empty` });
       }
-      const opts = Array.isArray(q.options) ? q.options : [];
-      if (opts.length !== 4) {
-        return res.status(400).json({ success: false, message: `Question ${i + 1} must have exactly 4 options` });
-      }
-      const hasEmptyOpt = opts.some((o: any) => typeof o !== 'string' || !o.trim());
-      if (hasEmptyOpt) {
-        return res.status(400).json({ success: false, message: `Question ${i + 1} has empty option choices` });
-      }
-      if (q.correctOption === undefined || q.correctOption === null) {
-        return res.status(400).json({ success: false, message: `Question ${i + 1} requires correctOption` });
-      }
-      const corr = Number(q.correctOption);
-      if (isNaN(corr) || corr < 0 || corr > 3) {
-        return res.status(400).json({ success: false, message: `Question ${i + 1} correctOption must be between 0 and 3` });
-      }
-      const pts = Number(q.points || q.marks || 10);
-      if (isNaN(pts) || pts <= 0) {
-        return res.status(400).json({ success: false, message: `Question ${i + 1} points must be greater than 0` });
-      }
-    }
-
-    const totalScore = questions.reduce((sum: number, q: any) => sum + (Number(q.points || q.marks) || 10), 0);
-
-    const idempotencyKey = req.headers['idempotency-key'] || req.body.clientRequestId || req.body.idempotencyKey;
-    let requestHash = '';
-
-    if (idempotencyKey) {
-      requestHash = computeAssessmentCreateHash(req.body);
-      const [existingRows]: any = await db.query(
-        "SELECT * FROM assessment_idempotency_requests WHERE company_id = ? AND operation = 'CREATE_ASSESSMENT' AND idempotency_key = ?",
-        [companyId, idempotencyKey]
-      );
-
-      if (existingRows && existingRows.length > 0) {
-        let existingRow = existingRows[0];
-        if (existingRow.request_hash !== requestHash) {
-          return res.status(409).json({
-            success: false,
-            code: "IDEMPOTENCY_KEY_REUSED",
-            message: "Idempotency key reused with different request payload"
-          });
-        }
-        if (existingRow.status === 'COMPLETED' && existingRow.response_json) {
-          return res.json(typeof existingRow.response_json === 'string' ? JSON.parse(existingRow.response_json) : existingRow.response_json);
-        }
-
-        if (existingRow.status === 'PENDING') {
-          const lockedAt = existingRow.locked_at || existingRow.created_at;
-          const isStale = lockedAt && (Date.now() - new Date(lockedAt).getTime() > 30000);
-
-          if (!isStale) {
-            for (let attempt = 0; attempt < 10; attempt++) {
-              await new Promise(r => setTimeout(r, 100));
-              const [checkRows]: any = await db.query(
-                "SELECT * FROM assessment_idempotency_requests WHERE id = ?",
-                [existingRow.id]
-              );
-              if (checkRows && checkRows.length > 0) {
-                const checkRow = checkRows[0];
-                if (checkRow.status === 'COMPLETED' && checkRow.response_json) {
-                  return res.json(typeof checkRow.response_json === 'string' ? JSON.parse(checkRow.response_json) : checkRow.response_json);
-                }
-                if (checkRow.status === 'FAILED') {
-                  existingRow = checkRow;
-                  break;
-                }
-              }
-            }
-          }
-
-          if (existingRow.status === 'PENDING') {
-            const freshLockedAt = existingRow.locked_at || existingRow.created_at;
-            const stillNotStale = freshLockedAt && (Date.now() - new Date(freshLockedAt).getTime() <= 30000);
-            if (stillNotStale) {
-              return res.status(409).json({
-                success: false,
-                code: "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-                message: "Request with this idempotency key is currently in progress."
-              });
-            }
-          }
-        }
-
-        // FAILED or stale PENDING: reclaim row
-        await db.query(
-          "UPDATE assessment_idempotency_requests SET status = 'PENDING', locked_at = CURRENT_TIMESTAMP, failed_at = NULL, failure_code = NULL WHERE id = ?",
-          [existingRow.id]
-        );
-      } else {
-        try {
-          await db.query(
-            "INSERT INTO assessment_idempotency_requests (company_id, operation, idempotency_key, request_hash, status, locked_at) VALUES (?, 'CREATE_ASSESSMENT', ?, ?, 'PENDING', CURRENT_TIMESTAMP)",
-            [companyId, idempotencyKey, requestHash]
-          );
-        } catch (err: any) {
-          const [checkRows]: any = await db.query(
-            "SELECT * FROM assessment_idempotency_requests WHERE company_id = ? AND operation = 'CREATE_ASSESSMENT' AND idempotency_key = ?",
-            [companyId, idempotencyKey]
-          );
-          if (checkRows && checkRows.length > 0) {
-            const checkRow = checkRows[0];
-            if (checkRow.request_hash !== requestHash) {
-              return res.status(409).json({
-                success: false,
-                code: "IDEMPOTENCY_KEY_REUSED",
-                message: "Idempotency key reused with different request payload"
-              });
-            }
-            if (checkRow.status === 'COMPLETED' && checkRow.response_json) {
-              return res.json(typeof checkRow.response_json === 'string' ? JSON.parse(checkRow.response_json) : checkRow.response_json);
-            }
-            if (checkRow.status === 'PENDING') {
-              for (let attempt = 0; attempt < 10; attempt++) {
-                await new Promise(r => setTimeout(r, 100));
-                const [pollRows]: any = await db.query(
-                  "SELECT * FROM assessment_idempotency_requests WHERE id = ?",
-                  [checkRow.id]
-                );
-                if (pollRows && pollRows.length > 0 && pollRows[0].status === 'COMPLETED' && pollRows[0].response_json) {
-                  return res.json(typeof pollRows[0].response_json === 'string' ? JSON.parse(pollRows[0].response_json) : pollRows[0].response_json);
-                }
-              }
-              return res.status(409).json({
-                success: false,
-                code: "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-                message: "Request with this idempotency key is currently in progress."
-              });
-            }
-            if (checkRow.status === 'FAILED') {
-              await db.query(
-                "UPDATE assessment_idempotency_requests SET status = 'PENDING', locked_at = CURRENT_TIMESTAMP, failed_at = NULL, failure_code = NULL WHERE id = ?",
-                [checkRow.id]
-              );
-            }
-          }
-        }
-      }
-    }
-
-    const formattedQuestions = questions.map((q: any, i: number) => ({
-      id: q.id || `q-${Date.now()}-${i}`,
-      type: q.type || 'MCQ',
-      questionText: (q.questionText || q.question || q.text || '').trim(),
-      options: q.options.map((o: any) => String(o).trim()),
-      correctOption: Number(q.correctOption),
-      points: Number(q.points || q.marks) || 10,
-      difficulty: q.difficulty || 'MEDIUM',
-      instructions: instructions || 'Please answer all questions carefully.',
-      testTitle: title || 'Draft Assessment',
-      duration: Number(duration) || 30
-    }));
-
-    const questionsJson = JSON.stringify(formattedQuestions);
-    const targetStatus = 'DRAFT';
-
-    const responsePayload = await db.transaction(async (tx) => {
-      const [insertRes]: any = await tx.query(`
-        INSERT INTO tests (job_id, questions_json, company_id, stage_id, cutoff_score, duration, status, version, title)
-        VALUES (NULL, ?, ?, NULL, 40, ?, ?, 1, ?)
-      `, [questionsJson, companyId, Number(duration), targetStatus, title || 'Draft Assessment']);
-      const assignedId = insertRes.insertId;
-
-      try {
-        await tx.query(`
-          INSERT INTO assessment_tests (company_id, title, version, questions_json, status)
-          VALUES (?, ?, 1, ?, ?)
-        `, [companyId, title || 'Draft Assessment', questionsJson, targetStatus]);
-      } catch (e) {}
-
-      return {
-        success: true,
-        message: "Assessment draft saved successfully!",
-        totalScore,
-        cutoffScore: 40,
-        assignmentId: assignedId,
-        data: {
-          id: String(assignedId),
-          job_id: null,
-          job_title: "Unassigned",
-          title: title || 'Draft Assessment',
-          created_by: "Company",
-          questions_count: formattedQuestions.length,
-          duration: Number(duration),
-          cutoff_score: 40,
-          total_marks: totalScore,
-          status: targetStatus,
-          version: 1,
-          questions: formattedQuestions
-        }
-      };
-    });
-
-    if (idempotencyKey) {
-      await db.query(
-        "UPDATE assessment_idempotency_requests SET status = 'COMPLETED', assessment_id = ?, response_json = ?, completed_at = CURRENT_TIMESTAMP WHERE company_id = ? AND operation = 'CREATE_ASSESSMENT' AND idempotency_key = ?",
-        [responsePayload.data.id, JSON.stringify(responsePayload), companyId, idempotencyKey]
-      );
-    }
-
-    res.json(responsePayload);
-  } catch (error: any) {
-    if (req.headers['idempotency-key'] || req.body?.clientRequestId || req.body?.idempotencyKey) {
-      const key = req.headers['idempotency-key'] || req.body.clientRequestId || req.body.idempotencyKey;
-      try {
-        await db.query(
-          "UPDATE assessment_idempotency_requests SET status = 'FAILED', failed_at = CURRENT_TIMESTAMP, failure_code = ? WHERE company_id = ? AND operation = 'CREATE_ASSESSMENT' AND idempotency_key = ? AND status = 'PENDING'",
-          [error.code || 'CREATION_FAILED', companyId, key]
-        );
-      } catch (e) {}
-    }
-    console.error("Error in POST /api/assessments/company/create:", error);
-    if (error.code === 'ER_NO_SUCH_TABLE' || (error.message && (error.message.includes("doesn't exist") || error.message.includes("no such table")))) {
-      return res.status(503).json({
-        success: false,
-        code: "ASSESSMENT_SCHEMA_NOT_READY",
-        message: "The Assessment database schema is not initialized. Please contact the administrator."
-      });
-    }
-    res.status(500).json({ success: false, message: error.message || "Failed to create assessment" });
-  }
-});
-
-// POST /api/assessments/company/publish (Dedicated Assessment Publish Endpoint)
-router.post("/company/publish", authenticate, async (req: any, res) => {
-  try {
-    const companyId = await resolveCompanyIdForUser(req.user);
-    if (!companyId) {
-      return res.status(403).json({ success: false, message: "Company profile not found" });
-    }
-
-    const { assessmentId, id, assessment_id } = req.body;
-    const targetId = assessmentId || id || assessment_id;
-
-    if (!targetId) {
-      return res.status(400).json({ success: false, message: "Assessment ID is required for publishing" });
-    }
-
-    const [testRows]: any = await db.query("SELECT * FROM tests WHERE id = ?", [targetId]);
-    if (testRows.length === 0) {
-      return res.status(404).json({ success: false, message: "Assessment not found" });
-    }
-
-    const test = testRows[0];
-    if (test.company_id && Number(test.company_id) !== Number(companyId)) {
-      return res.status(403).json({ success: false, message: "Unauthorized: Assessment belongs to another company" });
-    }
-
-    const qs = typeof test.questions_json === "string" ? JSON.parse(test.questions_json) : (test.questions_json || []);
-    if (!Array.isArray(qs) || qs.length === 0) {
-      return res.status(400).json({ success: false, message: "Cannot publish assessment with no questions" });
-    }
-
-    for (let i = 0; i < qs.length; i++) {
-      const q = qs[i];
       const opts = Array.isArray(q.options) ? q.options : [];
       if (opts.length !== 4 || opts.some((o: any) => typeof o !== 'string' || !o.trim())) {
         return res.status(400).json({ success: false, message: `Question ${i + 1} must have 4 non-empty options` });
@@ -2371,32 +2065,217 @@ router.post("/company/publish", authenticate, async (req: any, res) => {
       }
     }
 
-    const totalMarks = qs.reduce((acc: number, q: any) => acc + (Number(q.points || q.marks) || 10), 0);
-    const duration = Number(test.duration) || 30;
-    if (duration <= 0) {
-      return res.status(400).json({ success: false, message: "Duration must be greater than 0" });
+    const totalScore = questions.reduce((sum: number, q: any) => sum + (Number(q.points || q.marks) || 10), 0);
+
+    const idempotencyKey = req.headers['idempotency-key'] || req.body.clientRequestId || req.body.idempotencyKey;
+
+    if (idempotencyKey) {
+      const requestHash = computeAssessmentCreateHash(req.body);
+      const [existingRows]: any = await db.query(
+        "SELECT * FROM assessment_idempotency_requests WHERE company_id = ? AND operation = 'CREATE_ASSESSMENT' AND idempotency_key = ?",
+        [companyId, idempotencyKey]
+      );
+
+      if (existingRows && existingRows.length > 0) {
+        const existingRow = existingRows[0];
+        if (existingRow.request_hash !== requestHash) {
+          return res.status(409).json({
+            success: false,
+            code: "IDEMPOTENCY_KEY_REUSED",
+            message: "Idempotency key reused with different request payload"
+          });
+        }
+        if (existingRow.status === 'COMPLETED' && existingRow.response_json) {
+          return res.status(201).json(typeof existingRow.response_json === 'string' ? JSON.parse(existingRow.response_json) : existingRow.response_json);
+        }
+      } else {
+        try {
+          await db.query(
+            "INSERT INTO assessment_idempotency_requests (company_id, operation, idempotency_key, request_hash, status, locked_at) VALUES (?, 'CREATE_ASSESSMENT', ?, ?, 'PENDING', CURRENT_TIMESTAMP)",
+            [companyId, idempotencyKey, requestHash]
+          );
+        } catch (err: any) {}
+      }
     }
 
-    // Note: When updating an existing published assessment, version is incremented
-    // newVersion = (existing[0].version || 1) + 1
-    await db.query("UPDATE tests SET status = 'PUBLISHED' WHERE id = ?", [targetId]);
+    const formattedQuestions = questions.map((q: any, i: number) => ({
+      id: q.id || `q-${Date.now()}-${i}`,
+      type: q.type || 'MCQ',
+      questionText: (q.questionText || q.question || q.text || '').trim(),
+      options: q.options.map((o: any) => String(o).trim()),
+      correctOption: Number(q.correctOption),
+      points: Number(q.points || q.marks) || 10,
+      difficulty: q.difficulty || 'MEDIUM'
+    }));
 
-    try {
+    const questionsJson = JSON.stringify(formattedQuestions);
+
+    const responsePayload = await db.transaction(async (tx) => {
+      const [insertRes]: any = await tx.query(`
+        INSERT INTO company_assessment_definitions (company_id, title, description, questions_json, duration_minutes, cutoff_score, total_marks, version, status)
+        VALUES (?, ?, ?, ?, ?, 40.00, ?, 1, 'DRAFT')
+      `, [companyId, title || 'Draft Assessment', description || '', questionsJson, Number(duration), totalScore]);
+
+      const newId = insertRes.insertId;
+
+      return {
+        success: true,
+        message: "Assessment draft saved successfully!",
+        data: {
+          id: String(newId),
+          title: title || 'Draft Assessment',
+          description: description || '',
+          questions_count: formattedQuestions.length,
+          duration: Number(duration),
+          cutoff_score: 40,
+          total_marks: totalScore,
+          status: 'DRAFT',
+          version: 1,
+          questions: formattedQuestions
+        }
+      };
+    });
+
+    if (idempotencyKey) {
       await db.query(
-        "INSERT INTO audit_logs (user_id, action, details) VALUES (?, ?, ?)",
-        [req.user.userId, 'ASSESSMENT_PUBLISHED', `Published assessment ID ${targetId} v${test.version || 1}`]
+        "UPDATE assessment_idempotency_requests SET status = 'COMPLETED', assessment_id = ?, response_json = ?, completed_at = CURRENT_TIMESTAMP WHERE company_id = ? AND operation = 'CREATE_ASSESSMENT' AND idempotency_key = ?",
+        [responsePayload.data.id, JSON.stringify(responsePayload), companyId, idempotencyKey]
       );
-    } catch (e) {}
+    }
+
+    res.status(201).json(responsePayload);
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/company/create:", error);
+    if (error.code === 'ER_NO_SUCH_TABLE' || error.message?.includes("doesn't exist") || error.message?.includes("no such table")) {
+      return res.status(503).json({
+        success: false,
+        code: "ASSESSMENT_SCHEMA_NOT_READY",
+        message: "Assessment system database table is missing or migration is pending."
+      });
+    }
+    res.status(500).json({ success: false, message: error.message || "Failed to create assessment" });
+  }
+});
+
+// PUT /api/assessments/company/tests/:id (Edit definition)
+router.put("/company/tests/:id", authenticate, async (req: any, res) => {
+  try {
+    const companyId = await resolveCompanyIdForUser(req.user);
+    if (!companyId) {
+      return res.status(403).json({ success: false, message: "Company profile not found" });
+    }
+
+    const definitionId = req.params.id;
+    const { title, description, duration, questions } = req.body;
+
+    const [defs]: any = await db.query("SELECT * FROM company_assessment_definitions WHERE id = ?", [definitionId]);
+    if (defs.length === 0) {
+      return res.status(404).json({ success: false, message: "Assessment definition not found" });
+    }
+
+    const def = defs[0];
+    if (Number(def.company_id) !== Number(companyId)) {
+      return res.status(403).json({ success: false, message: "Unauthorized: Assessment belongs to another company" });
+    }
+
+    const formattedQuestions = (questions || []).map((q: any, i: number) => ({
+      id: q.id || `q-${Date.now()}-${i}`,
+      type: q.type || 'MCQ',
+      questionText: (q.questionText || q.question || q.text || '').trim(),
+      options: (q.options || []).map((o: any) => String(o).trim()),
+      correctOption: Number(q.correctOption),
+      points: Number(q.points || q.marks) || 10,
+      difficulty: q.difficulty || 'MEDIUM'
+    }));
+
+    const questionsJson = JSON.stringify(formattedQuestions);
+    const totalScore = formattedQuestions.reduce((sum: number, q: any) => sum + (q.points || 10), 0) || 100;
+    const durMinutes = Number(duration || def.duration_minutes) || 30;
+
+    if (def.status === 'DRAFT') {
+      // Update DRAFT in place
+      await db.query(`
+        UPDATE company_assessment_definitions
+        SET title = ?, description = ?, questions_json = ?, duration_minutes = ?, total_marks = ?
+        WHERE id = ?
+      `, [title || def.title, description !== undefined ? description : def.description, questionsJson, durMinutes, totalScore, definitionId]);
+
+      return res.json({
+        success: true,
+        message: "Draft assessment updated successfully",
+        data: {
+          id: String(definitionId),
+          title: title || def.title,
+          status: 'DRAFT',
+          version: def.version,
+          questions: formattedQuestions
+        }
+      });
+    } else {
+      // Create new DRAFT version when editing PUBLISHED definition
+      const newVersion = def.version + 1;
+      const [insertRes]: any = await db.query(`
+        INSERT INTO company_assessment_definitions (company_id, title, description, questions_json, duration_minutes, cutoff_score, total_marks, version, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT')
+      `, [companyId, title || def.title, description !== undefined ? description : def.description, questionsJson, durMinutes, def.cutoff_score, totalScore, newVersion]);
+
+      return res.status(201).json({
+        success: true,
+        message: `New draft version v${newVersion} created from published assessment`,
+        data: {
+          id: String(insertRes.insertId),
+          title: title || def.title,
+          status: 'DRAFT',
+          version: newVersion,
+          questions: formattedQuestions
+        }
+      });
+    }
+  } catch (error: any) {
+    console.error("Error in PUT /api/assessments/company/tests/:id:", error);
+    res.status(500).json({ success: false, message: "Failed to update assessment definition" });
+  }
+});
+
+// POST /api/assessments/company/publish
+router.post("/company/publish", authenticate, async (req: any, res) => {
+  try {
+    const companyId = await resolveCompanyIdForUser(req.user);
+    if (!companyId) {
+      return res.status(403).json({ success: false, message: "Company profile not found" });
+    }
+
+    const { assessmentId, id, assessment_id } = req.body;
+    const targetId = assessmentId || id || assessment_id;
+
+    if (!targetId) {
+      return res.status(400).json({ success: false, message: "Assessment ID is required for publishing" });
+    }
+
+    const [defs]: any = await db.query("SELECT * FROM company_assessment_definitions WHERE id = ?", [targetId]);
+    if (defs.length === 0) {
+      return res.status(404).json({ success: false, message: "Assessment definition not found" });
+    }
+
+    const def = defs[0];
+    if (Number(def.company_id) !== Number(companyId)) {
+      return res.status(403).json({ success: false, message: "Unauthorized: Assessment belongs to another company" });
+    }
+
+    const qs = typeof def.questions_json === "string" ? JSON.parse(def.questions_json) : (def.questions_json || []);
+    if (!Array.isArray(qs) || qs.length === 0) {
+      return res.status(400).json({ success: false, message: "Cannot publish assessment with no questions" });
+    }
+
+    await db.query("UPDATE company_assessment_definitions SET status = 'PUBLISHED' WHERE id = ?", [targetId]);
 
     res.json({
       success: true,
       message: "Assessment published successfully",
       data: {
         id: String(targetId),
-        title: test.title,
-        version: test.version || 1,
-        total_marks: totalMarks,
-        duration,
+        title: def.title,
+        version: def.version,
         status: 'PUBLISHED'
       }
     });
@@ -2406,7 +2285,7 @@ router.post("/company/publish", authenticate, async (req: any, res) => {
   }
 });
 
-// POST /api/assessments/company/assign (Dedicated Assessment Assignment Endpoint)
+// POST /api/assessments/company/assign
 router.post("/company/assign", authenticate, async (req: any, res) => {
   try {
     const { assessmentId, jobId, stageId, cutoffScore } = req.body;
@@ -2416,148 +2295,97 @@ router.post("/company/assign", authenticate, async (req: any, res) => {
       return res.status(403).json({ success: false, message: "Company profile not found" });
     }
 
-    if (!jobId) {
-      return res.status(400).json({ success: false, message: "Target Job ID is required for assignment" });
+    if (!assessmentId || !jobId) {
+      return res.status(400).json({ success: false, message: "Assessment ID and Job ID are required" });
     }
 
-    // 1. Verify job belongs to authenticated company and is active
-    const [jobRows]: any = await db.query("SELECT * FROM jobs WHERE id = ?", [jobId]);
-    if (jobRows.length === 0) {
+    // Verify definition is published
+    const [defs]: any = await db.query("SELECT * FROM company_assessment_definitions WHERE id = ?", [assessmentId]);
+    if (defs.length === 0) {
+      return res.status(404).json({ success: false, message: "Assessment definition not found" });
+    }
+
+    const def = defs[0];
+    if (Number(def.company_id) !== Number(companyId)) {
+      return res.status(403).json({ success: false, message: "Unauthorized: Assessment belongs to another company" });
+    }
+
+    if (def.status === 'DRAFT') {
+      return res.status(400).json({ success: false, message: "Draft assessment cannot be assigned until published" });
+    }
+
+    // Verify job belongs to company and is active
+    const [jobs]: any = await db.query("SELECT * FROM jobs WHERE id = ?", [jobId]);
+    if (jobs.length === 0) {
       return res.status(404).json({ success: false, message: "Target job not found" });
     }
-    const job = jobRows[0];
+    const job = jobs[0];
     if (Number(job.company_id) !== Number(companyId)) {
       return res.status(403).json({ success: false, message: "Unauthorized: Job belongs to another company" });
     }
-    
-    const isStatusOpen = String(job.status || '').toUpperCase() === 'OPEN';
-    const isNotEnded = !job.ended_at && !job.pipeline_ended_at;
-    const isNotExpired = (!job.deadline || new Date(job.deadline) >= new Date()) && (!job.expires_at || new Date(job.expires_at) >= new Date());
-    if (!isStatusOpen || !isNotEnded || !isNotExpired) {
-      return res.status(400).json({ success: false, message: "Cannot assign assessment to closed, ended, or expired job" });
+    const isEnded = String(job.status || '').toUpperCase() === 'ENDED' || String(job.status || '').toUpperCase() === 'CLOSED';
+    if (isEnded) {
+      return res.status(400).json({ success: false, code: "JOB_ENDED_READ_ONLY", message: "Candidates in an ended job are read-only." });
     }
 
-    // 2. Verify stage belongs to that exact job and is a canonical TESTING stage
+    // Verify stage belongs to job and is testing stage
+    let verifiedStageId = stageId;
     if (stageId) {
-      const [stageRows]: any = await db.query("SELECT * FROM job_stages WHERE id = ?", [stageId]);
-      if (stageRows.length === 0) {
-        return res.status(404).json({ success: false, message: "Specified stage not found" });
+      const [stages]: any = await db.query("SELECT * FROM job_stages WHERE id = ?", [stageId]);
+      if (stages.length === 0 || Number(stages[0].job_id) !== Number(jobId)) {
+        return res.status(400).json({ success: false, message: "Specified stage does not belong to target job" });
       }
-      const stage = stageRows[0];
-      if (Number(stage.job_id) !== Number(jobId)) {
-        return res.status(400).json({ success: false, message: "Specified stage belongs to a different job" });
-      }
-      const stName = String(stage.stage_name || '').toUpperCase();
-      const stType = String(stage.stage_type || '').toUpperCase();
-      const isTestingStage = stType === 'TEST' || stType === 'TESTING' || stType === 'ASSESSMENT' || stName.includes('TEST') || stName.includes('ASSESS');
-      if (!isTestingStage) {
+      const stName = String(stages[0].stage_name || '').toUpperCase();
+      const stType = String(stages[0].stage_type || '').toUpperCase();
+      const isTesting = stType === 'TEST' || stType === 'TESTING' || stType === 'ASSESSMENT' || stName.includes('TEST') || stName.includes('ASSESS');
+      if (!isTesting) {
         return res.status(400).json({ success: false, message: "Assessment can only be assigned to a TESTING stage" });
       }
     }
 
-    // 3. Verify Assessment status is PUBLISHED
-    let version = 1;
-
-    if (assessmentId) {
-      const [testRows]: any = await db.query("SELECT id, status, questions_json, version, title FROM tests WHERE id = ?", [assessmentId]);
-      if (testRows.length === 0) {
-        return res.status(404).json({ success: false, message: "Assessment template not found" });
-      }
-      const test = testRows[0];
-      if (test.status && test.status.toUpperCase() === 'DRAFT') {
-        return res.status(400).json({ success: false, message: "Draft assessment cannot be assigned until published" });
-      }
-      version = test.version || 1;
+    const numCutoff = cutoffScore !== undefined ? Number(cutoffScore) : Number(def.cutoff_score || 40);
+    const totalMarks = Number(def.total_marks || 100);
+    if (isNaN(numCutoff) || numCutoff < 0 || numCutoff >= totalMarks) {
+      return res.status(400).json({ success: false, message: "Cutoff score must be at least 0 and strictly less than total marks" });
     }
 
-    // 4. Block duplicate active assignment
-    const [existingAssn]: any = await db.query("SELECT id FROM tests WHERE job_id = ? AND status = 'PUBLISHED'", [jobId]);
-    if (existingAssn.length > 0 && String(existingAssn[0].id) !== String(assessmentId)) {
-      return res.status(409).json({ success: false, message: "Job already has an active published assessment assignment" });
-    }
+    // Upsert assignment in company_assessment_assignments
+    const [existingAssn]: any = await db.query(`
+      SELECT id FROM company_assessment_assignments
+      WHERE job_id = ? AND status = 'ACTIVE'
+    `, [jobId]);
 
-    // 5. Save assignment
-    const numCutoff = cutoffScore !== undefined ? Number(cutoffScore) : 40;
-    await db.query(`
-      UPDATE tests 
-      SET job_id = ?, stage_id = ?, cutoff_score = ?, status = 'PUBLISHED'
-      WHERE id = ?
-    `, [jobId, stageId || null, numCutoff, assessmentId]);
+    let assignmentId;
+    if (existingAssn.length > 0) {
+      assignmentId = existingAssn[0].id;
+      await db.query(`
+        UPDATE company_assessment_assignments
+        SET definition_version_id = ?, stage_id = ?, cutoff_score = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [assessmentId, verifiedStageId || null, numCutoff, assignmentId]);
+    } else {
+      const [insertRes]: any = await db.query(`
+        INSERT INTO company_assessment_assignments (company_id, definition_version_id, job_id, stage_id, cutoff_score, status)
+        VALUES (?, ?, ?, ?, ?, 'ACTIVE')
+      `, [companyId, assessmentId, jobId, verifiedStageId || null, numCutoff]);
+      assignmentId = insertRes.insertId;
+    }
 
     res.json({
       success: true,
-      message: `Assessment published and assigned to job ${job.title} successfully.`,
+      message: `Assessment assigned to job ${job.title} successfully.`,
       assignment: {
-        id: assessmentId,
-        jobId: job.id,
-        jobTitle: job.title,
-        stageId: stageId || null,
+        id: assignmentId,
+        assessmentId,
+        jobId,
+        stageId: verifiedStageId || null,
         cutoffScore: numCutoff,
-        version
+        version: def.version
       }
     });
   } catch (error: any) {
     console.error("Error in POST /api/assessments/company/assign:", error);
     res.status(500).json({ success: false, message: "Failed to assign assessment" });
-  }
-});
-
-// POST /api/assessments/company/bulk-import-questions
-router.post("/company/bulk-import-questions", authenticate, async (req: any, res) => {
-  try {
-    const { rawText, fileType, items } = req.body;
-    let questions: any[] = [];
-
-    if (items && Array.isArray(items) && items.length > 0) {
-      questions = items.map((item: any, i: number) => ({
-        id: `imp-${Date.now()}-${i}`,
-        type: 'MCQ',
-        questionText: item.questionText || item.question || item.text || `Question ${i + 1}`,
-        options: Array.isArray(item.options) ? item.options : [item.optionA || '', item.optionB || '', item.optionC || '', item.optionD || ''],
-        correctOption: item.correctOption !== undefined ? Number(item.correctOption) : (typeof item.answer === 'string' ? ['A','B','C','D'].indexOf(item.answer.toUpperCase()) : 0),
-        points: Number(item.points) || 10,
-        difficulty: item.difficulty || 'MEDIUM'
-      }));
-    } else if (rawText && typeof rawText === 'string') {
-      // Parse structured text / CSV lines
-      const lines = rawText.split(/\r?\n/).filter(l => l.trim().length > 0);
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith('{') || line.startsWith('[')) continue; // Handled by JSON
-        const parts = line.split(/,|\t|\|/);
-        if (parts.length >= 5) {
-          const qText = parts[0].trim();
-          const opts = [parts[1].trim(), parts[2].trim(), parts[3].trim(), parts[4].trim()];
-          const ansStr = parts[5] ? parts[5].trim().toUpperCase() : 'A';
-          const corr = ['A', 'B', 'C', 'D'].indexOf(ansStr) !== -1 ? ['A', 'B', 'C', 'D'].indexOf(ansStr) : 0;
-          questions.push({
-            id: `imp-${Date.now()}-${i}`,
-            type: 'MCQ',
-            questionText: qText,
-            options: opts,
-            correctOption: corr,
-            points: 10,
-            difficulty: 'MEDIUM'
-          });
-        }
-      }
-    }
-
-    if (questions.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No valid questions could be extracted. Please ensure CSV/Text format: Question, Option A, Option B, Option C, Option D, Correct Option (A/B/C/D)."
-      });
-    }
-
-    res.json({
-      success: true,
-      message: `Extracted ${questions.length} questions for preview.`,
-      questions
-    });
-  } catch (error: any) {
-    console.error("Error in bulk import questions:", error);
-    res.status(500).json({ success: false, message: "Failed to parse questions import file" });
   }
 });
 
@@ -2574,15 +2402,16 @@ router.get("/student/eligible", authenticate, async (req: any, res) => {
         a.id as application_id,
         a.job_id,
         a.current_stage_id,
-        a.status as app_status,
         j.title as job_title,
         cp.company_name,
-        js.stage_name,
-        js.stage_type,
-        t.id as test_id,
-        t.questions_json,
-        t.duration,
-        t.cutoff_score,
+        caa.id as assignment_id,
+        caa.cutoff_score as assignment_cutoff,
+        cad.id as definition_id,
+        cad.title as test_title,
+        cad.questions_json,
+        cad.duration_minutes,
+        cad.total_marks,
+        cad.version,
         ts.id as submission_id,
         ts.score,
         ts.passed,
@@ -2590,27 +2419,27 @@ router.get("/student/eligible", authenticate, async (req: any, res) => {
       FROM job_applications a
       JOIN jobs j ON a.job_id = j.id
       JOIN company_profiles cp ON j.company_id = cp.id
-      JOIN job_stages js ON a.current_stage_id = js.id
-      JOIN tests t ON t.job_id = j.id
-      LEFT JOIN test_submissions ts ON ts.application_id = a.id
+      JOIN company_assessment_assignments caa ON caa.job_id = a.job_id AND caa.status = 'ACTIVE' AND (caa.stage_id IS NULL OR caa.stage_id = a.current_stage_id)
+      JOIN company_assessment_definitions cad ON caa.definition_version_id = cad.id
+      LEFT JOIN test_submissions ts ON ts.application_id = a.id AND ts.assignment_id = caa.id
       WHERE a.student_id = ? AND a.status = 'IN_PROGRESS'
-        AND (UPPER(js.stage_type) IN ('TEST', 'ASSESSMENT', 'TESTING') OR UPPER(js.stage_name) LIKE '%TEST%' OR UPPER(js.stage_name) LIKE '%ASSESS%')
     `, [studentCtx.id]);
 
     const eligibleList = (apps || []).map((app: any) => {
       const qs = typeof app.questions_json === "string" ? JSON.parse(app.questions_json) : (app.questions_json || []);
-      const totalMarks = qs.reduce((acc: number, q: any) => acc + (q.points || 10), 0) || 100;
 
       return {
         applicationId: app.application_id,
         jobId: app.job_id,
         jobTitle: app.job_title,
         companyName: app.company_name,
-        testTitle: qs[0]?.testTitle || `${app.job_title} Assessment`,
+        assignmentId: app.assignment_id,
+        testId: app.definition_id,
+        testTitle: app.test_title,
         questionsCount: qs.length,
-        duration: app.duration || 30,
-        totalMarks,
-        cutoffScore: app.cutoff_score !== undefined ? app.cutoff_score : 40,
+        duration: app.duration_minutes || 30,
+        totalMarks: app.total_marks || 100,
+        cutoffScore: Number(app.assignment_cutoff || 40),
         isSubmitted: !!app.submission_id,
         score: app.score !== null ? app.score : null,
         passed: app.passed === 1,
@@ -2625,158 +2454,28 @@ router.get("/student/eligible", authenticate, async (req: any, res) => {
   }
 });
 
-// Canonical submission service function
-export async function submitAssessmentAttempt(attemptId: any, reqUser: any, answers: any) {
-  const studentCtx = await getStudentContext(reqUser.userId || reqUser.id);
-  
-  // Fetch application details
-  const [apps]: any = await db.query(`
-    SELECT a.id, a.job_id, a.student_id, a.current_stage_id, t.id as assignment_id, t.questions_json as test_questions_json, t.cutoff_score as test_cutoff_score, t.version as test_version
-    FROM job_applications a
-    JOIN tests t ON t.job_id = a.job_id
-    WHERE a.id = ?
-  `, [attemptId]);
-
-  if (apps.length === 0) {
-    return { status: 404, data: { success: false, message: "Eligible assessment attempt not found" } };
-  }
-
-  if (apps.length > 1) {
-    return {
-      status: 409,
-      data: {
-        success: false,
-        code: "AMBIGUOUS_ATTEMPT",
-        message: "Multiple assessment attempts match this application. Submit using the exact attempt ID."
-      }
-    };
-  }
-
-  const appRow = apps[0];
-  if (studentCtx && appRow.student_id !== studentCtx.id) {
-    return { status: 403, data: { success: false, message: "Unauthorized submission attempt" } };
-  }
-
-  // Check existing submission for exact attempt / application
-  const [existingSub]: any = await db.query("SELECT * FROM test_submissions WHERE application_id = ?", [attemptId]);
-
-  let sub: any = null;
-  if (existingSub.length > 0) {
-    sub = existingSub[0];
-    if (sub.status === 'COMPLETED' || sub.status === 'SUBMITTED') {
-      return {
-        status: 200,
-        data: {
-          success: true,
-          message: "Assessment submitted successfully! (Re-submitting returned committed result)",
-          earnedScore: sub.score,
-          totalMarks: sub.total_marks,
-          percentage: sub.percentage,
-          cutoffScore: sub.cutoff_score,
-          isPassed: sub.passed === 1,
-          submittedAt: sub.submitted_at
-        }
-      };
-    }
-  }
-
-  // Score strictly from the attempt snapshot (test_submissions.questions_json) or test fallback
-  let questions: any[] = [];
-  if (sub && sub.questions_json) {
-    questions = typeof sub.questions_json === "string" ? JSON.parse(sub.questions_json) : sub.questions_json;
-  } else if (appRow.test_questions_json) {
-    questions = typeof appRow.test_questions_json === "string" ? JSON.parse(appRow.test_questions_json) : appRow.test_questions_json;
-  }
-
-  let earnedScore = 0;
-  let totalMarks = sub?.total_marks || 0;
-  if (!totalMarks || totalMarks === 0) {
-    totalMarks = questions.reduce((acc: number, q: any) => acc + (Number(q.points || q.marks) || 10), 0) || 100;
-  }
-
-  questions.forEach((q: any) => {
-    const qPts = Number(q.points || q.marks) || 10;
-    const studentAns = answers ? answers[q.id] : undefined;
-    if (studentAns !== undefined && Number(studentAns) === Number(q.correctOption)) {
-      earnedScore += qPts;
-    }
-  });
-
-  const cutoff = sub?.cutoff_score !== undefined && sub?.cutoff_score !== null ? sub.cutoff_score : (appRow.test_cutoff_score !== undefined ? appRow.test_cutoff_score : 40);
-  const percentage = totalMarks > 0 ? Math.round((earnedScore / totalMarks) * 100) : 0;
-  const isPassed = earnedScore >= cutoff ? 1 : 0;
-
-  // Derive integrity/violations count strictly from server event logs and stored counter
-  let serverViolationsCount = sub?.violations_count || 0;
+async function handleCompanyStudentStart(req: any, res: any) {
   try {
-    const [eventRows]: any = await db.query("SELECT COUNT(*) as count FROM test_submission_events WHERE application_id = ?", [attemptId]);
-    if (eventRows.length > 0 && eventRows[0].count > 0) {
-      serverViolationsCount = Math.max(serverViolationsCount, eventRows[0].count);
-    }
-  } catch (err) {}
-
-  let attemptSubmissionId = sub?.id;
-
-  if (sub) {
-    await db.query(`
-      UPDATE test_submissions
-      SET score = ?, total_marks = ?, percentage = ?, passed = ?, cutoff_score = ?, violations_count = ?, answers_json = ?, status = 'COMPLETED', submitted_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [earnedScore, totalMarks, percentage, isPassed, cutoff, serverViolationsCount, JSON.stringify(answers || {}), sub.id]);
-  } else {
-    const [subResult]: any = await db.query(`
-      INSERT INTO test_submissions (assignment_id, assessment_version_id, application_id, student_id, job_id, stage_id, score, total_marks, percentage, passed, cutoff_score, assessment_version, questions_json, violations_count, answers_json, status, submitted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', CURRENT_TIMESTAMP)
-    `, [appRow.assignment_id || null, appRow.assignment_id || null, attemptId, appRow.student_id, appRow.job_id, appRow.current_stage_id, earnedScore, totalMarks, percentage, isPassed, cutoff, appRow.test_version || 1, JSON.stringify(questions), serverViolationsCount, JSON.stringify(answers || {})]);
-    attemptSubmissionId = subResult.insertId || attemptId;
-  }
-
-  // Persist submission notification with idempotency key
-  const subNotifKey = `ASSESSMENT_SUBMITTED:${attemptSubmissionId}`;
-  try {
-    await db.query(`
-      INSERT INTO notifications (user_id, title, message, type, idempotency_key)
-      VALUES (?, 'Assessment Submitted', 'Your test submission has been recorded.', 'INFO', ?)
-    `, [studentCtx ? studentCtx.user_id : (reqUser.userId || reqUser.id), subNotifKey]);
-  } catch (notifErr) {
-    // Duplicate key conflict handled gracefully without failing submission
-  }
-
-  return {
-    status: 200,
-    data: {
-      success: true,
-      message: "Assessment submitted successfully!",
-      earnedScore,
-      totalMarks,
-      percentage,
-      cutoffScore: cutoff,
-      isPassed: isPassed === 1
-    }
-  };
-}
-
-// POST /api/assessments/student/start (atomically initializes or resumes attempt snapshot)
-router.post("/student/start", authenticate, async (req: any, res) => {
-  try {
-    const { applicationId, testId } = req.body;
-    const targetAppId = applicationId || testId;
+    const { applicationId, assignmentId, testId } = req.body;
+    const targetAppId = applicationId;
     const studentCtx = await getStudentContext(req.user.userId || req.user.id);
 
     if (!targetAppId) {
-      return res.status(400).json({ success: false, message: "Application ID or Test ID is required" });
+      return res.status(400).json({ success: false, message: "Application ID is required" });
     }
 
-    // Fetch application and test details
     const [apps]: any = await db.query(`
-      SELECT a.id as application_id, a.job_id, a.student_id, a.current_stage_id, t.id as assignment_id, t.questions_json, t.cutoff_score, t.duration, t.version, t.assessment_id
+      SELECT a.id as application_id, a.job_id, a.student_id, a.current_stage_id,
+             caa.id as assignment_id, caa.cutoff_score as assignment_cutoff,
+             cad.id as definition_id, cad.questions_json, cad.duration_minutes, cad.total_marks, cad.version
       FROM job_applications a
-      JOIN tests t ON t.job_id = a.job_id
+      JOIN company_assessment_assignments caa ON caa.job_id = a.job_id AND caa.status = 'ACTIVE' AND (caa.stage_id IS NULL OR caa.stage_id = a.current_stage_id)
+      JOIN company_assessment_definitions cad ON caa.definition_version_id = cad.id
       WHERE a.id = ?
     `, [targetAppId]);
 
     if (apps.length === 0) {
-      return res.status(404).json({ success: false, message: "Test assignment not found for this application" });
+      return res.status(404).json({ success: false, message: "Active assessment assignment not found for this application" });
     }
 
     const appRow = apps[0];
@@ -2784,106 +2483,64 @@ router.post("/student/start", authenticate, async (req: any, res) => {
       return res.status(403).json({ success: false, message: "Unauthorized attempt access" });
     }
 
-    // Check if attempt already initialized in test_submissions
-    const [existingSub]: any = await db.query("SELECT * FROM test_submissions WHERE application_id = ?", [targetAppId]);
-
+    let attemptId;
     let fullQuestions: any[] = [];
-    let cutoffScore = appRow.cutoff_score !== undefined ? appRow.cutoff_score : 40;
-    let duration = appRow.duration || 30;
-    let version = appRow.version || 1;
+    const cutoffScore = Number(appRow.assignment_cutoff || 40);
 
-    if (existingSub.length > 0 && existingSub[0].questions_json) {
-      // Resume existing snapshot
-      const sub = existingSub[0];
-      fullQuestions = typeof sub.questions_json === "string" ? JSON.parse(sub.questions_json) : sub.questions_json;
-      cutoffScore = sub.cutoff_score !== undefined && sub.cutoff_score !== null ? sub.cutoff_score : cutoffScore;
+    const [existingSub]: any = await db.query(`
+      SELECT * FROM test_submissions WHERE application_id = ? AND assignment_id = ?
+    `, [targetAppId, appRow.assignment_id]);
+
+    if (existingSub.length > 0) {
+      attemptId = existingSub[0].id;
+      fullQuestions = typeof existingSub[0].questions_json === "string" ? JSON.parse(existingSub[0].questions_json) : existingSub[0].questions_json;
     } else {
-      // Atomically create snapshot on start
       fullQuestions = typeof appRow.questions_json === "string" ? JSON.parse(appRow.questions_json) : (appRow.questions_json || []);
-      const totalMarks = fullQuestions.reduce((sum: number, q: any) => sum + (Number(q.points || q.marks) || 10), 0) || 100;
+      const totalMarks = appRow.total_marks || fullQuestions.reduce((sum: number, q: any) => sum + (Number(q.points) || 10), 0) || 100;
 
-      if (existingSub.length === 0) {
-        await db.query(`
-          INSERT INTO test_submissions (assignment_id, assessment_version_id, application_id, student_id, job_id, stage_id, score, total_marks, percentage, passed, cutoff_score, assessment_version, questions_json, status)
-          VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, ?, ?, 'IN_PROGRESS')
-        `, [appRow.assignment_id || null, appRow.assignment_id || null, targetAppId, appRow.student_id, appRow.job_id, appRow.current_stage_id, totalMarks, cutoffScore, version, JSON.stringify(fullQuestions)]);
-      } else {
-        await db.query(`
-          UPDATE test_submissions
-          SET questions_json = ?, cutoff_score = ?, total_marks = ?, assessment_version = ?, assessment_version_id = ?
-          WHERE id = ?
-        `, [JSON.stringify(fullQuestions), cutoffScore, totalMarks, version, appRow.assignment_id || null, existingSub[0].id]);
-      }
+      const [insertRes]: any = await db.query(`
+        INSERT INTO test_submissions (assignment_id, assessment_version_id, application_id, student_id, job_id, stage_id, score, total_marks, percentage, passed, cutoff_score, assessment_version, questions_json, status)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, ?, ?, 'IN_PROGRESS')
+      `, [appRow.assignment_id, appRow.definition_id, targetAppId, appRow.student_id, appRow.job_id, appRow.current_stage_id, totalMarks, cutoffScore, appRow.version, JSON.stringify(fullQuestions)]);
+
+      attemptId = insertRes.insertId;
     }
 
-    // Return sanitized payload for Student: NO correctOption, NO explanation, NO scores, NO cutoff manipulation
+    // Sanitize questions for student: strip correct answers and explanations
     const sanitizedQuestions = fullQuestions.map((q: any, i: number) => ({
       id: q.id || `q-${i}`,
       type: q.type || 'MCQ',
       questionText: q.questionText || q.question || q.text || '',
       options: q.options || ['', '', '', ''],
-      points: Number(q.points || q.marks) || 10,
+      points: Number(q.points) || 10,
       sortOrder: i + 1
     }));
 
-    const totalMarks = fullQuestions.reduce((sum: number, q: any) => sum + (Number(q.points || q.marks) || 10), 0) || 100;
-
     res.json({
       success: true,
+      attemptId: String(attemptId),
       applicationId: targetAppId,
       assignmentId: appRow.assignment_id,
-      assessmentId: appRow.assessment_id || null,
-      assessmentVersion: version,
-      durationMinutes: duration,
-      totalMarks,
+      assessmentId: appRow.definition_id,
+      assessmentVersion: appRow.version,
+      durationMinutes: appRow.duration_minutes || 30,
+      totalMarks: appRow.total_marks || 100,
       questions: sanitizedQuestions
     });
   } catch (error: any) {
     console.error("Error in POST /api/assessments/student/start:", error);
     res.status(500).json({ success: false, message: "Failed to start assessment attempt" });
   }
-});
+}
 
-// POST /api/assessments/student/submit
-router.post("/student/submit", authenticate, async (req: any, res) => {
-  try {
-    const { applicationId, answers } = req.body;
+// POST /api/assessments/student/start
+router.post("/student/start", authenticate, handleCompanyStudentStart);
 
-    if (!applicationId || !answers) {
-      return res.status(400).json({ success: false, message: "Application ID and answers are required" });
-    }
-
-    const result = await submitAssessmentAttempt(applicationId, req.user, answers);
-    res.status(result.status).json(result.data);
-  } catch (error: any) {
-    console.error("Error in POST /api/assessments/student/submit:", error);
-    res.status(500).json({ success: false, message: "Failed to process assessment submission" });
-  }
-});
-
-// POST /api/assessments/student/submit/:attemptId
-router.post("/student/submit/:attemptId", authenticate, async (req: any, res) => {
-  try {
-    const attemptId = req.params.attemptId || req.body.applicationId;
-    const { answers } = req.body;
-
-    if (!attemptId) {
-      return res.status(400).json({ success: false, message: "Attempt ID or Application ID is required" });
-    }
-
-    const result = await submitAssessmentAttempt(attemptId, req.user, answers);
-    res.status(result.status).json(result.data);
-  } catch (error: any) {
-    console.error("Error in POST /api/assessments/student/submit/:attemptId:", error);
-    res.status(500).json({ success: false, message: "Failed to process assessment submission" });
-  }
-});
-
-// POST /api/assessments/student/event (proctoring/integrity violations)
+// POST /api/assessments/student/event
 router.post("/student/event", authenticate, async (req: any, res) => {
   try {
     const { applicationId, attemptId, eventType, idempotencyKey } = req.body;
-    const targetAttemptId = attemptId || req.body.attempt_id;
+    const targetAttemptId = attemptId;
     const studentCtx = await getStudentContext(req.user.userId || req.user.id);
 
     if (!applicationId || !eventType) {
@@ -2899,22 +2556,10 @@ router.post("/student/event", authenticate, async (req: any, res) => {
       return res.status(403).json({ success: false, message: "Unauthorized attempt access" });
     }
 
-    if (idempotencyKey) {
-      try {
-        const [existingKey]: any = await db.query("SELECT id FROM test_submission_events WHERE idempotency_key = ?", [idempotencyKey]);
-        if (existingKey.length > 0) {
-          return res.status(409).json({ success: false, message: "Duplicate event key blocked" });
-        }
-      } catch (e) {}
-    }
-
-    // Resolve exact attempt_id in test_submissions if available
     let exactAttemptId = targetAttemptId || null;
     if (!exactAttemptId) {
       const [subRows]: any = await db.query("SELECT id FROM test_submissions WHERE application_id = ? ORDER BY id DESC LIMIT 1", [applicationId]);
-      if (subRows.length > 0) {
-        exactAttemptId = subRows[0].id;
-      }
+      if (subRows.length > 0) exactAttemptId = subRows[0].id;
     }
 
     try {
@@ -2926,19 +2571,12 @@ router.post("/student/event", authenticate, async (req: any, res) => {
       return res.status(409).json({ success: false, message: "Duplicate event key blocked" });
     }
 
-    // Increment violations_count on exact test_submissions attempt row
     if (exactAttemptId) {
       await db.query(`
         UPDATE test_submissions
         SET violations_count = violations_count + 1
         WHERE id = ?
       `, [exactAttemptId]);
-    } else {
-      await db.query(`
-        UPDATE test_submissions
-        SET violations_count = violations_count + 1
-        WHERE application_id = ?
-      `, [applicationId]);
     }
 
     res.json({
@@ -2954,13 +2592,120 @@ router.post("/student/event", authenticate, async (req: any, res) => {
   }
 });
 
-// POST /api/assessments/company/bulk-advance (Advance candidates in TESTING phase)
+// Canonical submission handler
+export async function submitAssessmentAttempt(attemptId: any, reqUser: any, answers: any) {
+  const studentCtx = await getStudentContext(reqUser.userId || reqUser.id);
+
+  const [subs]: any = await db.query("SELECT * FROM test_submissions WHERE id = ? OR application_id = ?", [attemptId, attemptId]);
+  if (subs.length === 0) {
+    return { status: 404, data: { success: false, message: "Attempt not found" } };
+  }
+
+  const sub = subs[0];
+  if (studentCtx && sub.student_id !== studentCtx.id) {
+    return { status: 403, data: { success: false, message: "Unauthorized submission" } };
+  }
+
+  if (sub.status === 'COMPLETED') {
+    return {
+      status: 200,
+      data: {
+        success: true,
+        message: "Assessment submitted successfully!",
+        earnedScore: Number(sub.score),
+        totalMarks: Number(sub.total_marks),
+        percentage: Number(sub.percentage),
+        cutoffScore: Number(sub.cutoff_score),
+        isPassed: sub.passed === 1,
+        submittedAt: sub.submitted_at
+      }
+    };
+  }
+
+  const questions = typeof sub.questions_json === "string" ? JSON.parse(sub.questions_json) : (sub.questions_json || []);
+  let earnedScore = 0;
+  const totalMarks = sub.total_marks || 100;
+
+  questions.forEach((q: any) => {
+    const qPts = Number(q.points) || 10;
+    const studentAns = answers ? answers[q.id] : undefined;
+    if (studentAns !== undefined && Number(studentAns) === Number(q.correctOption)) {
+      earnedScore += qPts;
+    }
+  });
+
+  const cutoff = Number(sub.cutoff_score || 40);
+  const percentage = totalMarks > 0 ? Math.round((earnedScore / totalMarks) * 100) : 0;
+  const isPassed = earnedScore >= cutoff ? 1 : 0;
+
+  let eventCount = sub.violations_count || 0;
+  try {
+    const [evRows]: any = await db.query("SELECT COUNT(*) as count FROM test_submission_events WHERE attempt_id = ?", [sub.id]);
+    if (evRows.length > 0) eventCount = Math.max(eventCount, evRows[0].count);
+  } catch (e) {}
+
+  await db.query(`
+    UPDATE test_submissions
+    SET score = ?, total_marks = ?, percentage = ?, passed = ?, violations_count = ?, answers_json = ?, status = 'COMPLETED', submitted_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `, [earnedScore, totalMarks, percentage, isPassed, eventCount, JSON.stringify(answers || {}), sub.id]);
+
+  return {
+    status: 200,
+    data: {
+      success: true,
+      message: "Assessment submitted successfully!",
+      earnedScore,
+      totalMarks,
+      percentage,
+      cutoffScore: cutoff,
+      isPassed: isPassed === 1
+    }
+  };
+}
+
+// POST /api/assessments/student/submit/:attemptId
+router.post("/student/submit/:attemptId", authenticate, async (req: any, res) => {
+  try {
+    const attemptId = req.params.attemptId || req.body.applicationId;
+    const { answers } = req.body;
+
+    if (!attemptId) {
+      return res.status(400).json({ success: false, message: "Attempt ID is required" });
+    }
+
+    const result = await submitAssessmentAttempt(attemptId, req.user, answers);
+    res.status(result.status).json(result.data);
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/student/submit/:attemptId:", error);
+    res.status(500).json({ success: false, message: "Failed to process submission" });
+  }
+});
+
+// POST /api/assessments/student/submit
+router.post("/student/submit", authenticate, async (req: any, res) => {
+  try {
+    const { applicationId, attemptId, answers } = req.body;
+    const targetId = attemptId || applicationId;
+
+    if (!targetId) {
+      return res.status(400).json({ success: false, message: "Attempt ID or Application ID is required" });
+    }
+
+    const result = await submitAssessmentAttempt(targetId, req.user, answers);
+    res.status(result.status).json(result.data);
+  } catch (error: any) {
+    console.error("Error in POST /api/assessments/student/submit:", error);
+    res.status(500).json({ success: false, message: "Failed to process submission" });
+  }
+});
+
+// POST /api/assessments/company/bulk-advance
 router.post("/company/bulk-advance", authenticate, async (req: any, res) => {
   try {
     const { applications, applicationIds, expectedCurrentStageId, targetStageId, companyId, jobId } = req.body;
     const companyCtx = await getCompanyContext(req.user.userId || req.user.id);
 
-    // Reject legacy or prohibited parameters
     if (targetStageId !== undefined || companyId !== undefined || jobId !== undefined) {
       return res.status(400).json({
         success: false,
@@ -2993,7 +2738,7 @@ router.post("/company/bulk-advance", authenticate, async (req: any, res) => {
       const appId = item.applicationId;
       try {
         const [appRows]: any = await db.query(`
-          SELECT a.id, a.job_id, a.current_stage_id, j.company_id
+          SELECT a.id, a.job_id, a.current_stage_id, a.status as app_status, j.company_id, j.status as job_status
           FROM job_applications a
           JOIN jobs j ON a.job_id = j.id
           WHERE a.id = ?
@@ -3010,14 +2755,54 @@ router.post("/company/bulk-advance", authenticate, async (req: any, res) => {
           continue;
         }
 
+        if (String(app.job_status || '').toUpperCase() === 'ENDED' || String(app.job_status || '').toUpperCase() === 'CLOSED') {
+          results.push({ applicationId: appId, success: false, code: "JOB_ENDED_READ_ONLY", message: "Candidates in an ended job are read-only." });
+          continue;
+        }
+
+        if (app.app_status === 'REJECTED' || app.app_status === 'CANCELLED' || app.app_status === 'OFFERED' || app.app_status === 'SELECTED' || app.app_status === 'HIRED') {
+          results.push({ applicationId: appId, success: false, message: "Cannot advance candidate in terminal status" });
+          continue;
+        }
+
         if (item.expectedCurrentStageId !== undefined && item.expectedCurrentStageId !== null && app.current_stage_id !== item.expectedCurrentStageId) {
           results.push({ applicationId: appId, success: false, message: `Stale stage detected: expected stage ${item.expectedCurrentStageId} but candidate is at stage ${app.current_stage_id}` });
           continue;
         }
 
-        // Fetch ordered stages for job
-        const [stages]: any = await db.query("SELECT id, stage_order FROM job_stages WHERE job_id = ? ORDER BY stage_order ASC", [app.job_id]);
-        const currentIdx = stages.findIndex((s: any) => s.id === app.current_stage_id);
+        // Verify active assignment
+        const [assns]: any = await db.query(`
+          SELECT caa.id, caa.cutoff_score FROM company_assessment_assignments caa
+          WHERE caa.job_id = ? AND caa.status = 'ACTIVE' AND (caa.stage_id IS NULL OR caa.stage_id = ?)
+        `, [app.job_id, app.current_stage_id]);
+
+        if (assns.length === 0) {
+          results.push({ applicationId: appId, success: false, message: "No active assessment assignment found for candidate stage" });
+          continue;
+        }
+
+        // Verify completed passing attempt in test_submissions
+        const [subs]: any = await db.query(`
+          SELECT * FROM test_submissions
+          WHERE application_id = ? AND status = 'COMPLETED'
+          ORDER BY id DESC LIMIT 1
+        `, [appId]);
+
+        if (subs.length === 0) {
+          results.push({ applicationId: appId, success: false, message: "Candidate has not completed assessment" });
+          continue;
+        }
+
+        const sub = subs[0];
+        const requiredCutoff = assns[0]?.cutoff_score !== undefined ? Number(assns[0].cutoff_score) : Number(sub.cutoff_score || 0);
+        if (sub.passed !== 1 && Number(sub.score) < requiredCutoff) {
+          results.push({ applicationId: appId, success: false, message: "Candidate failed assessment cutoff score" });
+          continue;
+        }
+
+        // Fetch stages and advance
+        const [stages]: any = await db.query("SELECT id, stage_order FROM job_stages WHERE job_id = ? ORDER BY stage_order ASC, id ASC", [app.job_id]);
+        const currentIdx = stages.findIndex((s: any) => Number(s.id) === Number(app.current_stage_id));
 
         if (currentIdx === -1 || currentIdx >= stages.length - 1) {
           results.push({ applicationId: appId, success: false, message: "No next stage available" });
@@ -3026,14 +2811,13 @@ router.post("/company/bulk-advance", authenticate, async (req: any, res) => {
 
         const nextStage = stages[currentIdx + 1];
 
-        // Perform stage transition
-        await db.query("UPDATE job_applications SET current_stage_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [nextStage.id, appId]);
+        await db.query("UPDATE job_applications SET current_stage_id = ? WHERE id = ?", [nextStage.id, appId]);
         await db.query(`
           INSERT INTO application_history (application_id, stage_id, action, notes)
           VALUES (?, ?, 'BULK_ADVANCE', 'Advanced candidate via Bulk Assessment Advance')
         `, [appId, nextStage.id]);
 
-        results.push({ applicationId: appId, success: true, nextStageId: nextStage.id });
+        results.push({ applicationId: appId, success: true, previousStageId: app.current_stage_id, newStageId: nextStage.id });
       } catch (err: any) {
         results.push({ applicationId: appId, success: false, message: err.message });
       }

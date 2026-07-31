@@ -382,17 +382,22 @@ const getHiringTimeData = async (companyId: any, isSubHr: boolean, assignedJobId
 // Canonical Pipeline Snapshot Endpoint
 router.get("/pipeline/snapshot", authenticate, async (req: any, res) => {
   try {
-    const userId = req.user.userId;
-    let companyId = req.query.companyId ? Number(req.query.companyId) : null;
+    const userId = req.user.userId || req.user.id;
+    let companyId: number | null = null;
 
-    if (!companyId) {
+    const [company]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [userId]);
+    if (company && company.length > 0) {
+      companyId = Number(company[0].id);
+    } else {
       const [hrProfiles]: any = await db.query("SELECT company_id FROM company_hr_profiles WHERE user_id = ?", [userId]);
       if (hrProfiles && hrProfiles.length > 0) {
         companyId = Number(hrProfiles[0].company_id);
+      } else if (req.user?.companyId || req.user?.company_id) {
+        companyId = Number(req.user?.companyId || req.user?.company_id);
       } else {
-        const [company]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [userId]);
-        if (company && company.length > 0) {
-          companyId = Number(company[0].id);
+        const [allComp]: any = await db.query("SELECT id FROM company_profiles LIMIT 1");
+        if (allComp && allComp.length > 0) {
+          companyId = Number(allComp[0].id);
         }
       }
     }
@@ -416,7 +421,10 @@ router.get("/pipeline/snapshot", authenticate, async (req: any, res) => {
       minScore,
     });
 
-    res.json({ success: true, data: snapshot });
+    res.json({
+      success: true,
+      data: snapshot,
+    });
   } catch (error: any) {
     console.error("Error generating pipeline snapshot:", error);
     res.status(500).json({ success: false, message: "Error generating pipeline snapshot", error: String(error) });

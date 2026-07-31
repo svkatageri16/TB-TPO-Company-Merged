@@ -428,9 +428,7 @@ export function PipelineBoard() {
 
       Object.keys(bucketToCanonicalKey).forEach((bucketKey) => {
         const stageVal = stagesObj[bucketKey];
-        const candList = Array.isArray(stageVal)
-          ? stageVal
-          : (stageVal && Array.isArray(stageVal.candidates) ? stageVal.candidates : []);
+        const candList = stageVal?.candidates || [];
         const canonicalKey = bucketToCanonicalKey[bucketKey];
 
         candList.forEach((appItem: any) => {

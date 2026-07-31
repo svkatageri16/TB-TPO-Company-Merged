@@ -211,9 +211,15 @@ export default function CompanyAssessments() {
     try {
       setLoading(true);
       const [testsRes, jobsRes, attemptsRes] = await Promise.all([
-        api.get('/assessments/company/tests').catch(() => api.get('/assessments/company/history')),
-        api.get('/jobs'),
-        api.get('/assessments/company/history').catch(() => api.get('/assessments/company/attempts'))
+        api.get('/assessments/company/tests').catch((err) => {
+          console.error("Error fetching company tests:", err);
+          return { data: { success: false, data: [] } };
+        }),
+        api.get('/jobs').catch(() => ({ data: { success: false, data: [] } })),
+        api.get('/assessments/company/history').catch((err) => {
+          console.error("Error fetching assessment history:", err);
+          return { data: { success: false, data: [] } };
+        })
       ]);
 
       if (currentSeq !== fetchSeqRef.current) return;
@@ -408,7 +414,7 @@ export default function CompanyAssessments() {
         duration: editingTest.duration
       }));
 
-      const res = await api.put(`/company/tests/${editingTest.id}`, {
+      const res = await api.put(`/assessments/company/tests/${editingTest.id}`, {
         companyUserId: user?.id,
         questions: formattedQuestions
       });

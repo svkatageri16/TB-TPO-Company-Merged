@@ -304,11 +304,18 @@ export function CandidateDetailModal({ candidate, onClose }: CandidateDetailModa
                           </div>
                           <div className="p-8 bg-white border border-slate-100 rounded-[32px] shadow-sm">
                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Integrity Status</p>
-                             <div className="flex items-center gap-3">
-                                <div className={`w-3 h-3 rounded-full ${candidate.latest_test_violations > 0 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} />
-                                <h4 className="text-xl font-black text-slate-900 uppercase">{candidate.latest_test_violations > 0 ? 'Flagged' : 'Clean'}</h4>
-                             </div>
-                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">{candidate.latest_test_violations || 0} Total Violations</p>
+                             {(() => {
+                               const violations = Number(candidate.latest_test_violations_count ?? candidate.latest_test_violations ?? 0);
+                               return (
+                                 <>
+                                   <div className="flex items-center gap-3">
+                                      <div className={`w-3 h-3 rounded-full ${violations > 0 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} />
+                                      <h4 className="text-xl font-black text-slate-900 uppercase">{violations > 0 ? 'Flagged' : 'Clean'}</h4>
+                                   </div>
+                                   <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">{violations} Total Violations</p>
+                                 </>
+                               );
+                             })()}
                           </div>
                           <div className="p-8 bg-white border border-slate-100 rounded-[32px] shadow-sm">
                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Test Format</p>

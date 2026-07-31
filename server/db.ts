@@ -150,6 +150,33 @@ function setupSQLite() {
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           expires_at DATETIME DEFAULT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS company_assessment_definitions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          company_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          questions_json TEXT NOT NULL,
+          duration_minutes INTEGER DEFAULT 30,
+          cutoff_score REAL DEFAULT 40,
+          total_marks REAL DEFAULT 100,
+          status TEXT DEFAULT 'DRAFT',
+          version INTEGER DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS company_assessment_assignments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          company_id INTEGER NOT NULL,
+          definition_version_id INTEGER NOT NULL,
+          job_id INTEGER NOT NULL,
+          stage_id INTEGER,
+          cutoff_score REAL DEFAULT 40,
+          status TEXT DEFAULT 'ACTIVE',
+          assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
       `);
       sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_comp_op_key ON assessment_idempotency_requests(company_id, operation, idempotency_key)");
     } catch (e) {}
@@ -2437,6 +2464,139 @@ export async function initDb() {
       try { await connection.query("ALTER TABLE assessment_idempotency_requests ADD COLUMN failed_at TIMESTAMP NULL DEFAULT NULL"); } catch (e) {}
       try { await connection.query("ALTER TABLE assessment_idempotency_requests ADD COLUMN failure_code VARCHAR(100) DEFAULT NULL"); } catch (e) {}
       try { await connection.query("ALTER TABLE assessment_idempotency_requests ADD COLUMN expires_at TIMESTAMP NULL DEFAULT NULL"); } catch (e) {}
+
+      // Ensure tests table exists and has assessment metadata columns on MySQL
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS tests (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(255) NOT NULL,
+            description TEXT,
+            company_id INT DEFAULT NULL,
+            job_id INT DEFAULT NULL,
+            stage_id INT DEFAULT NULL,
+            cutoff_score DOUBLE DEFAULT 40,
+            duration INT DEFAULT 30,
+            status VARCHAR(50) DEFAULT 'PUBLISHED',
+            version INT DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (err: any) {
+        console.error("Error creating tests table on MySQL:", err.message);
+      }
+
+      try { await connection.query("ALTER TABLE tests ADD COLUMN assessment_id INT DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE tests ADD COLUMN company_id INT DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE tests ADD COLUMN stage_id INT DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE tests ADD COLUMN cutoff_score DOUBLE DEFAULT 40"); } catch (e) {}
+      try { await connection.query("ALTER TABLE tests ADD COLUMN duration INT DEFAULT 30"); } catch (e) {}
+      try { await connection.query("ALTER TABLE tests ADD COLUMN status VARCHAR(50) DEFAULT 'PUBLISHED'"); } catch (e) {}
+      try { await connection.query("ALTER TABLE tests ADD COLUMN version INT DEFAULT 1"); } catch (e) {}
+
+      // Ensure test_submissions table exists and has required columns on MySQL
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS test_submissions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            student_id INT NOT NULL,
+            test_id INT DEFAULT NULL,
+            assignment_id INT DEFAULT NULL,
+            assessment_version_id INT DEFAULT NULL,
+            job_id INT DEFAULT NULL,
+            application_id INT DEFAULT NULL,
+            score DOUBLE DEFAULT 0,
+            percentage DOUBLE DEFAULT 0,
+            passed TINYINT(1) DEFAULT 0,
+            cutoff_score DOUBLE DEFAULT 0,
+            total_marks DOUBLE DEFAULT 100,
+            duration INT DEFAULT 30,
+            questions_json LONGTEXT DEFAULT NULL,
+            violations_count INT DEFAULT 0,
+            status VARCHAR(50) DEFAULT 'SUBMITTED',
+            submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (err: any) {
+        console.error("Error creating test_submissions table on MySQL:", err.message);
+      }
+
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN assignment_id INT DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN assessment_version_id INT DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN job_id INT DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN application_id INT DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN attempt_number INT DEFAULT 1"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN assessment_version INT DEFAULT 1"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN questions_json LONGTEXT DEFAULT NULL"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN percentage DOUBLE DEFAULT 0"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN passed TINYINT(1) DEFAULT 0"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN cutoff_score DOUBLE DEFAULT 0"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN total_marks DOUBLE DEFAULT 100"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN violations_count INT DEFAULT 0"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN status VARCHAR(50) DEFAULT 'SUBMITTED'"); } catch (e) {}
+      try { await connection.query("ALTER TABLE test_submissions ADD COLUMN duration INT DEFAULT 30"); } catch (e) {}
+
+      // Ensure test_submission_events table exists and has required columns on MySQL
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS test_submission_events (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            attempt_id INT DEFAULT NULL,
+            application_id INT NOT NULL,
+            student_id INT DEFAULT NULL,
+            event_type VARCHAR(100) NOT NULL,
+            event_data LONGTEXT DEFAULT NULL,
+            idempotency_key VARCHAR(255) DEFAULT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (err: any) {
+        console.error("Error creating test_submission_events table on MySQL:", err.message);
+      }
+
+      try { await connection.query("ALTER TABLE test_submission_events ADD COLUMN attempt_id INT DEFAULT NULL"); } catch (e) {}
+
+      // Ensure company_assessment_definitions table exists on MySQL
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS company_assessment_definitions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            company_id INT NOT NULL,
+            title VARCHAR(255) NOT NULL,
+            description TEXT,
+            questions_json LONGTEXT NOT NULL,
+            duration_minutes INT DEFAULT 30,
+            cutoff_score DOUBLE DEFAULT 40,
+            total_marks DOUBLE DEFAULT 100,
+            status VARCHAR(50) DEFAULT 'DRAFT',
+            version INT DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (err: any) {
+        console.error("Error creating company_assessment_definitions on MySQL:", err.message);
+      }
+
+      // Ensure company_assessment_assignments table exists on MySQL
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS company_assessment_assignments (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            company_id INT NOT NULL,
+            definition_version_id INT NOT NULL,
+            job_id INT NOT NULL,
+            stage_id INT DEFAULT NULL,
+            cutoff_score DOUBLE DEFAULT 40,
+            status VARCHAR(50) DEFAULT 'ACTIVE',
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_comp_job (company_id, job_id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (err: any) {
+        console.error("Error creating company_assessment_assignments on MySQL:", err.message);
+      }
     }
 
     // Apply High-Coverage Performance Indices for MySQL
@@ -2965,18 +3125,36 @@ export async function initDb() {
       console.log("🧹 Cleaned up demo batches from assessment_batches table.");
     } catch (e) {}
 
+    try {
+      await performQuery(`ALTER TABLE test_submissions ADD COLUMN stage_id INT`);
+    } catch (e) {}
+    try {
+      await performQuery(`ALTER TABLE test_submissions ADD COLUMN assessment_version INT DEFAULT 1`);
+    } catch (e) {}
+    try {
+      await performQuery(`ALTER TABLE test_submissions ADD COLUMN answers_json TEXT`);
+    } catch (e) {}
+
     console.log("🚀 Custom Community Tables Initialized Successfully.");
   } catch (err) {
     console.error("❌ Error setting up Community tables:", err);
   }
 
-  // Assessment Database Preflight Verification
+  // Assessment Database Preflight Verification (Company & TPO separated)
   const preflight = await ensureAssessmentSchema();
   if (!preflight.ready) {
     console.error("❌ Assessment database schema initialization failed. Missing elements:", preflight.missing);
     throw new Error(`Assessment database schema initialization failed: missing ${preflight.missing.join(', ')}`);
   } else {
-    console.log("✅ Assessment database schema preflight verified successfully.");
+    console.log("✅ Company Assessment database schema preflight verified successfully.");
+  }
+
+  const tpoPreflight = await ensureTPOAssessmentSchema();
+  if (!tpoPreflight.ready) {
+    console.error("❌ TPO Assessment database schema initialization failed. Missing elements:", tpoPreflight.missing);
+    throw new Error(`TPO Assessment database schema initialization failed: missing ${tpoPreflight.missing.join(', ')}`);
+  } else {
+    console.log("✅ TPO Assessment database schema preflight verified successfully.");
   }
 }
 
@@ -2986,18 +3164,39 @@ export async function ensureAssessmentSchema(): Promise<{ ready: boolean; missin
   try {
     if (useMySQL && pool) {
       const requiredTables = [
-        'assessment_idempotency_requests',
-        'tests',
+        'company_assessment_definitions',
+        'company_assessment_assignments',
         'test_submissions',
-        'assessment_tests',
-        'assessment_attempts',
-        'test_submission_events'
+        'test_submission_events',
+        'assessment_idempotency_requests'
       ];
 
       for (const tbl of requiredTables) {
         const [rows]: any = await pool.query("SHOW TABLES LIKE ?", [tbl]);
         if (!rows || rows.length === 0) {
           missing.push(`table:${tbl}`);
+        }
+      }
+
+      if (!missing.includes('table:company_assessment_definitions')) {
+        const [cols]: any = await pool.query("DESCRIBE `company_assessment_definitions`");
+        const colNames = cols.map((c: any) => c.Field);
+        const reqCols = ['company_id', 'title', 'questions_json', 'duration_minutes', 'cutoff_score', 'total_marks', 'status', 'version'];
+        for (const c of reqCols) {
+          if (!colNames.includes(c)) {
+            missing.push(`column:company_assessment_definitions.${c}`);
+          }
+        }
+      }
+
+      if (!missing.includes('table:company_assessment_assignments')) {
+        const [cols]: any = await pool.query("DESCRIBE `company_assessment_assignments`");
+        const colNames = cols.map((c: any) => c.Field);
+        const reqCols = ['company_id', 'definition_version_id', 'job_id', 'stage_id', 'cutoff_score', 'status'];
+        for (const c of reqCols) {
+          if (!colNames.includes(c)) {
+            missing.push(`column:company_assessment_assignments.${c}`);
+          }
         }
       }
 
@@ -3040,18 +3239,39 @@ export async function ensureAssessmentSchema(): Promise<{ ready: boolean; missin
         setupSQLite();
       }
       const requiredTables = [
-        'assessment_idempotency_requests',
-        'tests',
+        'company_assessment_definitions',
+        'company_assessment_assignments',
         'test_submissions',
-        'assessment_tests',
-        'assessment_attempts',
-        'test_submission_events'
+        'test_submission_events',
+        'assessment_idempotency_requests'
       ];
 
       for (const tbl of requiredTables) {
         const row = sqliteDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tbl);
         if (!row) {
           missing.push(`table:${tbl}`);
+        }
+      }
+
+      if (!missing.includes('table:company_assessment_definitions')) {
+        const cols: any = sqliteDb.prepare("PRAGMA table_info(company_assessment_definitions)").all();
+        const colNames = cols.map((c: any) => c.name);
+        const reqCols = ['company_id', 'title', 'questions_json', 'duration_minutes', 'cutoff_score', 'total_marks', 'status', 'version'];
+        for (const c of reqCols) {
+          if (!colNames.includes(c)) {
+            missing.push(`column:company_assessment_definitions.${c}`);
+          }
+        }
+      }
+
+      if (!missing.includes('table:company_assessment_assignments')) {
+        const cols: any = sqliteDb.prepare("PRAGMA table_info(company_assessment_assignments)").all();
+        const colNames = cols.map((c: any) => c.name);
+        const reqCols = ['company_id', 'definition_version_id', 'job_id', 'stage_id', 'cutoff_score', 'status'];
+        for (const c of reqCols) {
+          if (!colNames.includes(c)) {
+            missing.push(`column:company_assessment_assignments.${c}`);
+          }
         }
       }
 
@@ -3082,6 +3302,43 @@ export async function ensureAssessmentSchema(): Promise<{ ready: boolean; missin
         const colNames = cols.map((c: any) => c.name);
         if (!colNames.includes('attempt_id')) {
           missing.push('column:test_submission_events.attempt_id');
+        }
+      }
+    }
+  } catch (err: any) {
+    missing.push(`error:${err.message}`);
+  }
+
+  return { ready: missing.length === 0, missing };
+}
+
+export async function ensureTPOAssessmentSchema(): Promise<{ ready: boolean; missing: string[] }> {
+  const missing: string[] = [];
+  const requiredTables = [
+    'assessment_tests',
+    'assessment_questions',
+    'assessment_attempts',
+    'assessment_answers',
+    'assessment_violations',
+    'assessment_reports'
+  ];
+
+  try {
+    if (useMySQL && pool) {
+      for (const tbl of requiredTables) {
+        const [rows]: any = await pool.query("SHOW TABLES LIKE ?", [tbl]);
+        if (!rows || rows.length === 0) {
+          missing.push(`table:${tbl}`);
+        }
+      }
+    } else {
+      if (!sqliteDb) {
+        setupSQLite();
+      }
+      for (const tbl of requiredTables) {
+        const row = sqliteDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tbl);
+        if (!row) {
+          missing.push(`table:${tbl}`);
         }
       }
     }

@@ -73,6 +73,36 @@ CALL AddColumnIfNotExists('assessment_idempotency_requests', 'completed_at', 'TI
 CALL AddColumnIfNotExists('assessment_idempotency_requests', 'failed_at', 'TIMESTAMP NULL DEFAULT NULL');
 CALL AddColumnIfNotExists('assessment_idempotency_requests', 'failure_code', 'VARCHAR(100) DEFAULT NULL');
 
+-- 1b. Create company_assessment_definitions table
+CREATE TABLE IF NOT EXISTS company_assessment_definitions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    questions_json LONGTEXT NOT NULL,
+    duration_minutes INT DEFAULT 30,
+    cutoff_score DOUBLE DEFAULT 40,
+    total_marks DOUBLE DEFAULT 100,
+    status VARCHAR(50) DEFAULT 'DRAFT',
+    version INT DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 1c. Create company_assessment_assignments table
+CREATE TABLE IF NOT EXISTS company_assessment_assignments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    definition_version_id INT NOT NULL,
+    job_id INT NOT NULL,
+    stage_id INT DEFAULT NULL,
+    cutoff_score DOUBLE DEFAULT 40,
+    status VARCHAR(50) DEFAULT 'ACTIVE',
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_comp_job (company_id, job_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 1. Ensure tests table exists and has assessment metadata columns
 CREATE TABLE IF NOT EXISTS tests (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -138,10 +168,12 @@ CREATE TABLE IF NOT EXISTS test_submission_events (
     application_id INT NOT NULL,
     student_id INT DEFAULT NULL,
     event_type VARCHAR(100) NOT NULL,
+    event_data LONGTEXT DEFAULT NULL,
     idempotency_key VARCHAR(255) DEFAULT NULL UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CALL AddColumnIfNotExists('test_submission_events', 'attempt_id', 'INT DEFAULT NULL');
+CALL AddColumnIfNotExists('test_submission_events', 'event_data', 'LONGTEXT DEFAULT NULL');
 
 -- Unambiguous legacy attempt_id backfill for test_submission_events where exactly one attempt exists
 UPDATE test_submission_events tse

@@ -1,13 +1,40 @@
 import db from "../db.ts";
 import { isJobActive, isJobEnded } from "./jobLifecycleService.ts";
 
-export interface PipelineSnapshotBucket {
-  bucketKey: string;
-  bucketLabel: string;
-  count: number;
-  percentage: number;
-  applications: any[];
+export type PipelineStageKey =
+  | 'applied'
+  | 'aiScreening'
+  | 'assessment'
+  | 'technicalInterview'
+  | 'hrInterview'
+  | 'selected'
+  | 'rejected';
+
+export interface PipelineCandidate {
+  application_id: number;
+  job_id: number;
+  student_id: number;
+  current_stage_id: number | null;
+  status: string;
+  latest_test_attempt_id?: number | null;
+  latest_test_assignment_id?: number | null;
+  latest_test_score?: number | null;
+  latest_test_total_marks?: number | null;
+  latest_test_percentage?: number | null;
+  latest_test_passed?: boolean | number | null;
+  latest_test_cutoff?: number | null;
+  latest_test_status?: string | null;
+  latest_test_violations_count?: number | null;
+  latest_test_integrity_flag?: boolean | number | null;
+  [key: string]: unknown;
 }
+
+export interface StageBucket {
+  count: number;
+  candidates: PipelineCandidate[];
+}
+
+export type PipelineStages = Record<PipelineStageKey, StageBucket>;
 
 export interface PipelineSnapshot {
   scope: {
@@ -16,38 +43,17 @@ export interface PipelineSnapshot {
   };
   summary: {
     totalApplicants: number;
-    shortlisted: number;
-    inInterview: number;
     inPipeline: number;
+    inInterview: number;
     selected: number;
     rejected: number;
   };
-  stages: {
-    applied: { count: number; candidates: any[] };
-    aiScreening: { count: number; candidates: any[] };
-    assessment: { count: number; candidates: any[] };
-    technicalInterview: { count: number; candidates: any[] };
-    hrInterview: { count: number; candidates: any[] };
-    selected: { count: number; candidates: any[] };
-    rejected: { count: number; candidates: any[] };
-  };
+  stages: PipelineStages;
   reconciliation: {
     bucketTotal: number;
     missingApplicationIds: number[];
     duplicateApplicationIds: number[];
   };
-  companyId: number;
-  totalApplicants: number;
-  buckets: {
-    applied: number;
-    screening: number;
-    assessment: number;
-    interview: number;
-    hr: number;
-    selected: number;
-    rejected: number;
-  };
-  bucketDetails: PipelineSnapshotBucket[];
 }
 
 /**
@@ -56,6 +62,25 @@ export interface PipelineSnapshot {
  * 2. Joined Current Stage Type / Name (APPLICATION/APPLIED -> 'applied', SCREENING -> 'aiScreening', TEST/ASSESSMENT -> 'assessment', INTERVIEW -> 'technicalInterview', HR -> 'hrInterview')
  * 3. Fallback -> 'applied'
  */
+function createStageBucket(): StageBucket {
+  return {
+    count: 0,
+    candidates: []
+  };
+}
+
+function createEmptyStages(): PipelineStages {
+  return {
+    applied: createStageBucket(),
+    aiScreening: createStageBucket(),
+    assessment: createStageBucket(),
+    technicalInterview: createStageBucket(),
+    hrInterview: createStageBucket(),
+    selected: createStageBucket(),
+    rejected: createStageBucket(),
+  };
+}
+
 export function mapStageToCanonicalKey(app: any): {
   key: "applied" | "aiScreening" | "assessment" | "technicalInterview" | "hrInterview" | "selected" | "rejected";
   legacyKey: "applied" | "screening" | "assessment" | "interview" | "hr" | "selected" | "rejected";
@@ -86,7 +111,7 @@ export function mapStageToCanonicalKey(app: any): {
     if (stageTypeUpper === "SCREENING" || stageTypeUpper === "AI_SCREENING" || stageTypeUpper === "RESUME_SCREENING") {
       return { key: "aiScreening", legacyKey: "screening" };
     }
-    if (stageTypeUpper === "TEST" || stageTypeUpper === "ASSESSMENT" || stageTypeUpper === "SKILL_ASSESSMENT" || stageTypeUpper === "TEST_STAGE") {
+    if (stageTypeUpper === "TEST" || stageTypeUpper === "TESTING" || stageTypeUpper === "ASSESSMENT" || stageTypeUpper === "SKILL_ASSESSMENT" || stageTypeUpper === "TEST_STAGE") {
       return { key: "assessment", legacyKey: "assessment" };
     }
     if (stageTypeUpper === "HR" || stageTypeUpper === "HR_INTERVIEW") {
@@ -124,12 +149,7 @@ export function mapStageToCanonicalKey(app: any): {
     }
   }
 
-  // 3. Status string fallback
-  if (statusUpper === "IN_PROGRESS") {
-    return { key: "aiScreening", legacyKey: "screening" };
-  }
-
-  // 4. Fallback to applied
+  // Fallback to applied (Do NOT map generic IN_PROGRESS automatically to AI Screening)
   return { key: "applied", legacyKey: "applied" };
 }
 
@@ -159,11 +179,10 @@ export async function getPipelineSnapshot(
   let assignedAppIds: number[] | null = null;
 
   if (userId) {
-    const [hrProfiles]: any = await db.query(
-      "SELECT company_id FROM company_hr_profiles WHERE user_id = ?",
-      [userId]
-    );
-    if (hrProfiles && hrProfiles.length > 0) {
+    const [compProfiles]: any = await db.query("SELECT id FROM company_profiles WHERE user_id = ?", [userId]);
+    const isSuperHr = compProfiles && compProfiles.length > 0;
+
+    if (!isSuperHr) {
       const [assignments]: any = await db.query(
         "SELECT application_id, job_id FROM company_application_assignments WHERE company_id = ? AND assigned_hr_user_id = ?",
         [companyId, userId]
@@ -177,11 +196,16 @@ export async function getPipelineSnapshot(
       if (assignments) assignments.forEach((a: any) => allJobIds.add(Number(a.job_id)));
       if (jobAssignments) jobAssignments.forEach((a: any) => allJobIds.add(Number(a.job_id)));
 
-      if (allJobIds.size > 0) {
-        assignedJobIds = Array.from(allJobIds);
-      }
-      if (assignments && assignments.length > 0) {
-        assignedAppIds = assignments.map((a: any) => Number(a.application_id));
+      assignedJobIds = Array.from(allJobIds);
+      assignedAppIds = assignments ? assignments.map((a: any) => Number(a.application_id)) : [];
+
+      if (assignedJobIds.length === 0 && assignedAppIds.length === 0) {
+        return {
+          scope: { jobStatus: scopeVal, jobId: targetJobId },
+          summary: { totalApplicants: 0, inPipeline: 0, inInterview: 0, selected: 0, rejected: 0 },
+          stages: createEmptyStages(),
+          reconciliation: { bucketTotal: 0, missingApplicationIds: [], duplicateApplicationIds: [] },
+        };
       }
     }
   }
@@ -217,6 +241,16 @@ export async function getPipelineSnapshot(
       u.email as student_email,
       ts.overall_score as talent_score,
       sps.avg_interview_score,
+      test_res.attempt_id as latest_test_attempt_id,
+      test_res.assignment_id as latest_test_assignment_id,
+      test_res.score as latest_test_score,
+      test_res.total_marks as latest_test_total_marks,
+      test_res.percentage as latest_test_percentage,
+      test_res.passed as latest_test_passed,
+      test_res.cutoff_score as latest_test_cutoff,
+      test_res.submission_status as latest_test_status,
+      test_res.violations_count as latest_test_violations_count,
+      CASE WHEN test_res.violations_count > 0 THEN 1 ELSE 0 END as latest_test_integrity_flag,
       test_res.score as assessment_score,
       test_res.total_marks as assessment_total_score,
       test_res.percentage as assessment_percentage,
@@ -233,8 +267,8 @@ export async function getPipelineSnapshot(
     LEFT JOIN student_performance_stats sps ON u.id = sps.user_id
     LEFT JOIN (
       SELECT 
-        sub.job_id,
-        sub.student_id,
+        sub.id as attempt_id,
+        sub.assignment_id,
         sub.application_id,
         sub.score,
         sub.total_marks,
@@ -245,11 +279,12 @@ export async function getPipelineSnapshot(
         sub.status as submission_status
       FROM test_submissions sub
       INNER JOIN (
-        SELECT COALESCE(application_id, 0) as app_id, student_id, job_id, MAX(id) as max_id 
+        SELECT application_id, MAX(id) as max_id 
         FROM test_submissions 
-        GROUP BY COALESCE(application_id, 0), student_id, job_id
+        WHERE application_id IS NOT NULL
+        GROUP BY application_id
       ) latest ON sub.id = latest.max_id
-    ) test_res ON (test_res.application_id = a.id OR (test_res.job_id = a.job_id AND test_res.student_id = a.student_id))
+    ) test_res ON test_res.application_id = a.id
     WHERE j.company_id = ?
   `;
 
@@ -329,35 +364,7 @@ export async function getPipelineSnapshot(
   });
 
   // 4. Initialize stage buckets
-  const stages = {
-    applied: { count: 0, candidates: [] as any[] },
-    aiScreening: { count: 0, candidates: [] as any[] },
-    assessment: { count: 0, candidates: [] as any[] },
-    technicalInterview: { count: 0, candidates: [] as any[] },
-    hrInterview: { count: 0, candidates: [] as any[] },
-    selected: { count: 0, candidates: [] as any[] },
-    rejected: { count: 0, candidates: [] as any[] },
-  };
-
-  const legacyBuckets = {
-    applied: 0,
-    screening: 0,
-    assessment: 0,
-    interview: 0,
-    hr: 0,
-    selected: 0,
-    rejected: 0,
-  };
-
-  const legacyBucketApps: Record<string, any[]> = {
-    applied: [],
-    screening: [],
-    assessment: [],
-    interview: [],
-    hr: [],
-    selected: [],
-    rejected: [],
-  };
+  const stages = createEmptyStages();
 
   const seenAppIds = new Set<number>();
   const duplicateAppIds: number[] = [];
@@ -371,13 +378,34 @@ export async function getPipelineSnapshot(
     }
     seenAppIds.add(appId);
 
-    const { key, legacyKey } = mapStageToCanonicalKey(app);
+    const cand = {
+      ...app,
+      applicationId: Number(app.application_id),
+      application_id: Number(app.application_id),
+      jobId: Number(app.job_id),
+      job_id: Number(app.job_id),
+      studentId: Number(app.student_id),
+      student_id: Number(app.student_id),
+      fullName: app.full_name || app.student_name || "",
+      studentName: app.full_name || app.student_name || "",
+      email: app.email || app.student_email || "",
+      studentEmail: app.email || app.student_email || "",
+      latest_test_attempt_id: app.latest_test_attempt_id !== undefined && app.latest_test_attempt_id !== null ? Number(app.latest_test_attempt_id) : null,
+      latest_test_assignment_id: app.latest_test_assignment_id !== undefined && app.latest_test_assignment_id !== null ? Number(app.latest_test_assignment_id) : null,
+      latest_test_score: app.latest_test_score !== undefined && app.latest_test_score !== null ? Number(app.latest_test_score) : null,
+      latest_test_total_marks: app.latest_test_total_marks !== undefined && app.latest_test_total_marks !== null ? Number(app.latest_test_total_marks) : null,
+      latest_test_percentage: app.latest_test_percentage !== undefined && app.latest_test_percentage !== null ? Number(app.latest_test_percentage) : null,
+      latest_test_passed: app.latest_test_passed !== undefined && app.latest_test_passed !== null ? (Boolean(app.latest_test_passed) ? 1 : 0) : null,
+      latest_test_cutoff: app.latest_test_cutoff !== undefined && app.latest_test_cutoff !== null ? Number(app.latest_test_cutoff) : null,
+      latest_test_status: app.latest_test_status ?? null,
+      latest_test_violations_count: app.latest_test_violations_count !== undefined && app.latest_test_violations_count !== null ? Number(app.latest_test_violations_count) : 0,
+      latest_test_integrity_flag: (app.latest_test_violations_count || 0) > 0 ? 1 : 0,
+    };
 
-    stages[key].count++;
-    stages[key].candidates.push(app);
+    const { key } = mapStageToCanonicalKey(cand);
 
-    legacyBuckets[legacyKey]++;
-    legacyBucketApps[legacyKey].push(app);
+    stages[key].candidates.push(cand as PipelineCandidate);
+    stages[key].count = stages[key].candidates.length;
   }
 
   const totalApplicants = filteredApps.length;
@@ -400,38 +428,16 @@ export async function getPipelineSnapshot(
 
   const summary = {
     totalApplicants,
-    shortlisted: stages.selected.count,
-    inInterview: stages.technicalInterview.count + stages.hrInterview.count,
     inPipeline:
       stages.applied.count +
       stages.aiScreening.count +
       stages.assessment.count +
       stages.technicalInterview.count +
       stages.hrInterview.count,
+    inInterview: stages.technicalInterview.count + stages.hrInterview.count,
     selected: stages.selected.count,
     rejected: stages.rejected.count,
   };
-
-  const bucketLabels: Record<string, string> = {
-    applied: "Applied",
-    screening: "AI Screening",
-    assessment: "Assessment",
-    interview: "Technical Interview",
-    hr: "HR Interview",
-    selected: "Selected",
-    rejected: "Rejected",
-  };
-
-  const bucketDetails: PipelineSnapshotBucket[] = Object.keys(legacyBuckets).map((key) => {
-    const count = legacyBuckets[key as keyof typeof legacyBuckets];
-    return {
-      bucketKey: key,
-      bucketLabel: bucketLabels[key] || key,
-      count,
-      percentage: totalApplicants > 0 ? Math.round((count / totalApplicants) * 100) : 0,
-      applications: legacyBucketApps[key],
-    };
-  });
 
   return {
     scope: {
@@ -445,9 +451,5 @@ export async function getPipelineSnapshot(
       missingApplicationIds: [],
       duplicateApplicationIds: duplicateAppIds,
     },
-    companyId,
-    totalApplicants,
-    buckets: legacyBuckets,
-    bucketDetails,
   };
 }

@@ -17,7 +17,7 @@ export const isJobActive = (job: any): boolean => {
     if (isExpired) return false;
   }
 
-  return job.status === 'OPEN';
+  return job.status === 'OPEN' || job.status === 'ACTIVE' || job.status === 'PUBLISHED';
 };
 
 export const isJobEnded = (job: any): boolean => {

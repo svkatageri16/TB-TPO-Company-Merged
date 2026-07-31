@@ -22,6 +22,8 @@ export function JobStageActionPage() {
   const [testResult, setTestResult] = useState<any>(null);
   const timerRef = useRef<any>(null);
 
+  const [attemptId, setAttemptId] = useState<number | null>(null);
+
   useEffect(() => {
     fetchStatus();
     fetchTimeline();
@@ -54,7 +56,19 @@ export function JobStageActionPage() {
     }
   };
 
-  const startTest = () => {
+  const startTest = async () => {
+    try {
+      const startRes = await api.post('/assessments/student/start', { applicationId: appId });
+      if (startRes.data.success) {
+        setAttemptId(startRes.data.attemptId);
+        if (startRes.data.durationMinutes) {
+          setTimeLeft(startRes.data.durationMinutes * 60);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to start assessment:", e);
+    }
+
     setStep('TEST');
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
@@ -76,10 +90,14 @@ export function JobStageActionPage() {
 
   const submitTest = async () => {
     clearInterval(timerRef.current);
+    if (!attemptId) {
+      alert("No active test attempt found.");
+      return;
+    }
     try {
-      const res = await api.post("/jobs/applications/submit-test", {
+      const res = await api.post(`/assessments/student/submit/${attemptId}`, {
         applicationId: appId,
-        stageId: data.current_stage_id,
+        stageId: data?.current_stage_id,
         answers
       });
       setTestResult(res.data);

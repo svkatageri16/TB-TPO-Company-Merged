@@ -9,53 +9,60 @@ export function JobTest() {
   const { jobId } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [test, setTest] = useState<any>(null);
-  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [test, setTest] = useState<any[]>([]);
+  const [attemptId, setAttemptId] = useState<number | null>(null);
+  const [answers, setAnswers] = useState<Record<number, any>>({});
   const [submitted, setSubmitted] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(600); // 10 mins
+  const [timeLeft, setTimeLeft] = useState(600); // Default 10 mins
 
   useEffect(() => {
     fetchTest();
   }, [jobId]);
 
   useEffect(() => {
-    if (timeLeft > 0 && !submitted) {
+    if (timeLeft > 0 && !submitted && attemptId) {
       const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
       return () => clearTimeout(timer);
-    } else if (timeLeft === 0 && !submitted) {
+    } else if (timeLeft === 0 && !submitted && attemptId) {
       handleSubmit();
     }
-  }, [timeLeft, submitted]);
+  }, [timeLeft, submitted, attemptId]);
 
   const fetchTest = async () => {
     try {
-      const { data } = await api.get(`/companies/tests/${jobId}`);
-      if (data.success && data.data) {
-        setTest(data.data);
-      } else {
-        alert("No test found for this job");
-        navigate("/student");
+      const { data } = await api.get('/assessments/student/eligible');
+      if (data.success && Array.isArray(data.assessments)) {
+        const matching = data.assessments.find((a: any) => String(a.jobId || a.job_id) === String(jobId));
+        if (matching) {
+          const startRes = await api.post('/assessments/student/start', { applicationId: matching.applicationId });
+          if (startRes.data.success) {
+            setAttemptId(startRes.data.attemptId);
+            setTest(startRes.data.questions || []);
+            if (startRes.data.durationMinutes) {
+              setTimeLeft(startRes.data.durationMinutes * 60);
+            }
+            return;
+          }
+        }
       }
+      alert("No active test found for this job.");
+      navigate("/student");
     } catch (err) {
       console.error(err);
+      alert("Failed to load test.");
+      navigate("/student");
     }
   };
 
   const handleSubmit = async () => {
-    let score = 0;
-    test.forEach((q: any) => {
-      if (answers[q.id] === (typeof q.correct_answer === 'number' ? q.options_json[q.correct_answer] : q.correct_answer)) score += 1;
-    });
-
-    const finalScore = Math.round((score / test.length) * 100);
-
+    if (!attemptId) return;
     try {
-      await api.post("/jobs/applications/submit-test", { 
-        studentId: user?.id, 
-        jobId, 
-        score: finalScore 
-      });
-      setSubmitted(true);
+      const res = await api.post(`/assessments/student/submit/${attemptId}`, { answers });
+      if (res.data.success) {
+        setSubmitted(true);
+      } else {
+        alert("Submission failed");
+      }
     } catch (err) {
       alert("Submission failed");
     }
