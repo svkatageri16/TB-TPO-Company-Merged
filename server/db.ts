@@ -2818,6 +2818,7 @@ export async function initDb() {
 
     try { await performQuery(`ALTER TABLE drops ADD COLUMN custom_label VARCHAR(100) DEFAULT NULL`); } catch (e) {}
     try { await performQuery(`ALTER TABLE drops ADD COLUMN created_by_user_id INT NULL`); } catch (e) {}
+    try { await performQuery(`ALTER TABLE drops ADD COLUMN likes_count INT DEFAULT 0`); } catch (e) {}
 
     await performQuery(`
       CREATE TABLE IF NOT EXISTS drop_views (

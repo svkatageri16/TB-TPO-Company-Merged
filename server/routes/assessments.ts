@@ -1870,12 +1870,58 @@ router.get("/company/history", authenticate, async (req: any, res) => {
       return res.json({ success: true, data: [], pagination: { total: 0, page: 1, limit: 20 } });
     }
 
-    const { jobId, searchQuery, status, page = 1, limit = 20 } = req.query;
-    const pageNum = Math.max(1, parseInt(String(page)));
-    const limitNum = Math.min(100, Math.max(1, parseInt(String(limit))));
-    const offset = (pageNum - 1) * limitNum;
+    const { jobId, searchQuery, status } = req.query;
 
-    let sql = `
+    const rawPage = Number(req.query.page ?? 1);
+    const rawLimit = Number(req.query.limit ?? 20);
+
+    const page = Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
+    const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    const offset = (page - 1) * limit;
+
+    const numericCompanyId = Number(companyId);
+    if (!numericCompanyId || numericCompanyId <= 0 || isNaN(numericCompanyId)) {
+      return res.status(400).json({ success: false, message: "Invalid company ID" });
+    }
+
+    let whereSql = ` WHERE (caa.company_id = ? OR j.company_id = ?)`;
+    const whereParams: any[] = [numericCompanyId, numericCompanyId];
+
+    if (jobId && jobId !== 'all') {
+      whereSql += ` AND ts.job_id = ?`;
+      whereParams.push(Number(jobId));
+    }
+
+    if (status && status !== 'all') {
+      if (status === 'passed') {
+        whereSql += ` AND (ts.passed = 1 OR ts.score >= ts.cutoff_score)`;
+      } else if (status === 'failed') {
+        whereSql += ` AND (ts.passed = 0 AND ts.score < ts.cutoff_score)`;
+      }
+    }
+
+    if (searchQuery) {
+      whereSql += ` AND (sp.full_name LIKE ? OR u.email LIKE ? OR j.title LIKE ?)`;
+      const q = `%${searchQuery}%`;
+      whereParams.push(q, q, q);
+    }
+
+    const countSql = `
+      SELECT COUNT(*) as total
+      FROM test_submissions ts
+      LEFT JOIN company_assessment_assignments caa ON ts.assignment_id = caa.id
+      LEFT JOIN company_assessment_definitions cad ON (ts.assessment_version_id = cad.id OR caa.definition_version_id = cad.id)
+      LEFT JOIN job_applications a ON ts.application_id = a.id
+      LEFT JOIN jobs j ON (ts.job_id = j.id OR caa.job_id = j.id)
+      LEFT JOIN student_profiles sp ON ts.student_id = sp.id
+      LEFT JOIN users u ON sp.user_id = u.id
+      ${whereSql}
+    `;
+
+    const [countRows]: any = await db.query(countSql, whereParams);
+    const total = Number(countRows[0]?.total || 0);
+
+    const dataSql = `
       SELECT 
         ts.id as attempt_id,
         ts.job_id,
@@ -1898,40 +1944,18 @@ router.get("/company/history", authenticate, async (req: any, res) => {
         cad.title as test_title,
         ts.questions_json
       FROM test_submissions ts
-      JOIN company_assessment_assignments caa ON ts.assignment_id = caa.id
-      JOIN company_assessment_definitions cad ON ts.assessment_version_id = cad.id
-      JOIN job_applications a ON ts.application_id = a.id
-      JOIN jobs j ON caa.job_id = j.id
-      JOIN student_profiles sp ON ts.student_id = sp.id
-      JOIN users u ON sp.user_id = u.id
-      WHERE caa.company_id = ?
+      LEFT JOIN company_assessment_assignments caa ON ts.assignment_id = caa.id
+      LEFT JOIN company_assessment_definitions cad ON (ts.assessment_version_id = cad.id OR caa.definition_version_id = cad.id)
+      LEFT JOIN job_applications a ON ts.application_id = a.id
+      LEFT JOIN jobs j ON (ts.job_id = j.id OR caa.job_id = j.id)
+      LEFT JOIN student_profiles sp ON ts.student_id = sp.id
+      LEFT JOIN users u ON sp.user_id = u.id
+      ${whereSql}
+      ORDER BY ts.submitted_at DESC, ts.id DESC
+      LIMIT ${limit} OFFSET ${offset}
     `;
 
-    const params: any[] = [companyId];
-
-    if (jobId && jobId !== 'all') {
-      sql += ` AND ts.job_id = ?`;
-      params.push(Number(jobId));
-    }
-
-    if (status && status !== 'all') {
-      if (status === 'passed') {
-        sql += ` AND (ts.passed = 1 OR ts.score >= ts.cutoff_score)`;
-      } else if (status === 'failed') {
-        sql += ` AND (ts.passed = 0 AND ts.score < ts.cutoff_score)`;
-      }
-    }
-
-    if (searchQuery) {
-      sql += ` AND (sp.full_name LIKE ? OR u.email LIKE ? OR j.title LIKE ?)`;
-      const q = `%${searchQuery}%`;
-      params.push(q, q, q);
-    }
-
-    sql += ` ORDER BY ts.submitted_at DESC LIMIT ? OFFSET ?`;
-    params.push(limitNum, offset);
-
-    const [rows]: any = await db.query(sql, params);
+    const [rows]: any = await db.query(dataSql, whereParams);
 
     const attemptsList = await Promise.all((rows || []).map(async (row: any) => {
       const qs = typeof row.questions_json === "string" ? JSON.parse(row.questions_json) : (row.questions_json || []);
@@ -1971,13 +1995,17 @@ router.get("/company/history", authenticate, async (req: any, res) => {
       };
     }));
 
+    const totalPages = Math.ceil(total / limit);
+
     res.json({
       success: true,
       data: attemptsList,
+      attempts: attemptsList,
       pagination: {
-        total: attemptsList.length,
-        page: pageNum,
-        limit: limitNum
+        page,
+        limit,
+        total,
+        totalPages
       }
     });
   } catch (error: any) {

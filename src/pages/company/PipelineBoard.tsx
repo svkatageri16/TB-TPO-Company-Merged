@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.tsx";
 import api from "../../services/api.ts";
+import { isJobActive, isJobEnded } from "../../utils/jobLifecycle.ts";
 import {
   Search,
   Filter,
@@ -50,8 +51,8 @@ const PIPELINE_STAGES = [
   { id: "TESTING", label: "Assessment", color: "purple" },
   { id: "INTERVIEW", label: "Technical Interview", color: "orange" },
   { id: "HR", label: "HR Interview", color: "pink" },
-  { id: "SHORTLISTED", label: "Selected", color: "emerald" },
-  { id: "REJECTED", label: "REJECTED", color: "rose" },
+  { id: "SHORTLISTED", label: "Shortlisted", color: "emerald" },
+  { id: "REJECTED", label: "Rejected", color: "rose" },
 ];
 
 const STAGE_CONFIGS: Record<
@@ -273,7 +274,7 @@ export function PipelineBoard() {
     }
   }, [queryJobId]);
 
-  const [pipelineFilter, setPipelineFilter] = useState<'active' | 'inactive' | 'all'>('active');
+  const [pipelineFilter, setPipelineFilter] = useState<'active' | 'ended' | 'all'>('active');
   const [searchQuery, setSearchQuery] = useState("");
 
   // Selection & Bulk
@@ -385,7 +386,7 @@ export function PipelineBoard() {
       }
 
       // Fetch canonical pipeline snapshot from backend
-      const scopeParam = pipelineFilter === 'inactive' ? 'ended' : pipelineFilter ? pipelineFilter.toLowerCase() : 'active';
+      const scopeParam = pipelineFilter ? pipelineFilter.toLowerCase() : 'active';
       const jobParam = selectedJobId !== "ALL" ? selectedJobId : "";
       const snapshotUrl = `/analytics/pipeline/snapshot?scope=${scopeParam}&jobId=${jobParam}&searchQuery=${encodeURIComponent(searchQuery)}&minScore=${minScore}`;
 
@@ -731,20 +732,11 @@ export function PipelineBoard() {
   const currentApplicants = useMemo(() => {
     let list = allApplicants;
 
-    const isJobActiveLocal = (j: any) => {
-      if (j.status === 'CLOSED' || j.ended_at || j.pipeline_ended_at) return false;
-      if (j.deadline) {
-        const dl = new Date(j.deadline).getTime();
-        if (!isNaN(dl) && dl < Date.now()) return false;
-      }
-      return j.status === 'OPEN';
-    };
-
     const filteredJobIds = jobs
       .filter((j: any) => {
-        const active = isJobActiveLocal(j);
+        const active = isJobActive(j);
         if (pipelineFilter === 'active') return active;
-        if (pipelineFilter === 'inactive') return !active;
+        if (pipelineFilter === 'ended') return isJobEnded(j);
         return true;
       })
       .map((j: any) => j.id.toString());
@@ -2720,19 +2712,9 @@ function PipelineHeader({
 }: any) {
   const selectedJob = jobs.find((j: any) => j.id.toString() === selectedJobId);
 
-  const isJobActiveHeader = (j: any) => {
-    if (j.status === 'CLOSED' || j.ended_at || j.pipeline_ended_at) return false;
-    if (j.deadline) {
-      const dl = new Date(j.deadline).getTime();
-      if (!isNaN(dl) && dl < Date.now()) return false;
-    }
-    return j.status === 'OPEN';
-  };
-
   const filteredJobsForSelect = jobs.filter((j: any) => {
-    const active = isJobActiveHeader(j);
-    if (pipelineFilter === 'active') return active;
-    if (pipelineFilter === 'inactive') return !active;
+    if (pipelineFilter === 'active') return isJobActive(j);
+    if (pipelineFilter === 'ended') return isJobEnded(j);
     return true;
   });
 
@@ -2751,16 +2733,21 @@ function PipelineHeader({
             className="bg-slate-50 border border-slate-200 text-slate-800 text-sm font-bold rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500/20 w-full max-w-sm"
           >
             <option value="ALL">
-              {pipelineFilter === 'active' ? "All Active Jobs" : pipelineFilter === 'inactive' ? "All Inactive Jobs" : "All Jobs"}
+              {pipelineFilter === 'active' ? "All Active Jobs" : pipelineFilter === 'ended' ? "All Ended Jobs" : "All Jobs"}
             </option>
-            {filteredJobsForSelect.map((j: any) => (
-              <option key={j.id} value={j.id.toString()}>
-                {j.title} {j.status === 'CLOSED' ? " (Ended)" : ""}
-              </option>
-            ))}
+            {filteredJobsForSelect.map((j: any) => {
+              const ended = isJobEnded(j);
+              const hasSuffix = j.title.toLowerCase().endsWith('(ended)');
+              const titleToDisplay = ended && !hasSuffix ? `${j.title} (Ended)` : j.title;
+              return (
+                <option key={j.id} value={j.id.toString()}>
+                  {titleToDisplay}
+                </option>
+              );
+            })}
           </select>
 
-          {/* Filter options for Active / Inactive / All pipelines */}
+          {/* Filter options for Active / Ended / All pipelines */}
           <div className="flex bg-slate-100 p-1 rounded-xl">
             <button
               onClick={() => {
@@ -2777,11 +2764,11 @@ function PipelineHeader({
             </button>
             <button
               onClick={() => {
-                setPipelineFilter('inactive');
+                setPipelineFilter('ended');
                 setSelectedJobId('ALL');
               }}
               className={`px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                pipelineFilter === 'inactive'
+                pipelineFilter === 'ended'
                   ? 'bg-white text-blue-600 shadow-sm font-black'
                   : 'text-slate-500 hover:text-slate-800 font-bold'
               }`}

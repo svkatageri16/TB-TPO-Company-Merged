@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useAuth } from "../../context/AuthContext.tsx";
 import api from "../../services/api.ts";
+import { isJobActive as checkJobActive, isJobEnded as checkJobEnded } from "../../utils/jobLifecycle.ts";
 import { 
   Plus, 
   Users, 
@@ -41,43 +42,11 @@ export function CompanyDashboard() {
 
   // Canonical Checkers & Helper Mapping Functions
   const isJobActive = useCallback((job: any) => {
-    if (!job) return false;
-    if (job.status === 'CLOSED') return false;
-    if (job.ended_at) return false;
-    
-    const isValidDeadline = job.deadline && 
-      job.deadline !== 'null' && 
-      job.deadline !== 'undefined' && 
-      job.deadline.toString().trim() !== '' && 
-      job.deadline !== '0000-00-00' && 
-      !isNaN(new Date(job.deadline).getTime());
-    
-    if (isValidDeadline) {
-      const isExpired = new Date(job.deadline).setHours(23, 59, 59, 999) < Date.now();
-      if (isExpired) return false;
-    }
-    
-    return job.status === 'OPEN';
+    return checkJobActive(job);
   }, []);
 
   const isJobEnded = useCallback((job: any) => {
-    if (!job) return false;
-    if (job.status === 'CLOSED') return true;
-    if (job.ended_at) return true;
-    
-    const isValidDeadline = job.deadline && 
-      job.deadline !== 'null' && 
-      job.deadline !== 'undefined' && 
-      job.deadline.toString().trim() !== '' && 
-      job.deadline !== '0000-00-00' && 
-      !isNaN(new Date(job.deadline).getTime());
-    
-    if (isValidDeadline) {
-      const isExpired = new Date(job.deadline).setHours(23, 59, 59, 999) < Date.now();
-      if (isExpired) return true;
-    }
-    
-    return false;
+    return checkJobEnded(job);
   }, []);
 
   const getCanonicalStageBucket = useCallback((app: any) => {

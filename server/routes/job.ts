@@ -1741,7 +1741,11 @@ router.post("/update-stage", authenticate, async (req: any, res) => {
     }
 
     let notificationType = status === 'SELECTED' ? 'SUCCESS' : 'INFO';
-    const [testScheds]: any = await db.query("SELECT id FROM test_schedules WHERE job_id = ? AND stage_id = ?", [app.job_id || 0, stageId]);
+    let testScheds: any[] = [];
+    try {
+      const [tsRes]: any = await db.query("SELECT id FROM test_schedules WHERE job_id = ? AND stage_id = ?", [app.job_id || 0, stageId]);
+      testScheds = tsRes || [];
+    } catch (e) {}
     if (testScheds.length > 0) {
       title = "Action Required: Test Scheduled";
       message = `Your application for "${app.job_title}" is now at stage "${stageName}". A test assessment is scheduled. Please go to Applied Jobs to complete it.`;

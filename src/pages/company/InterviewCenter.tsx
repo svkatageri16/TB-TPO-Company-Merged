@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import api from '../../services/api.ts';
+import { isJobActive } from '../../utils/jobLifecycle.ts';
 import { 
   Calendar, Clock, Video, Users, 
   ChevronRight, ChevronLeft, MoreVertical, Plus, 
@@ -116,26 +117,7 @@ export function InterviewCenter() {
     }
   };
 
-  const isJobActiveClient = (job: any) => {
-    if (!job) return false;
-    const statusUpper = String(job.status || '').toUpperCase();
-    if (statusUpper === 'CLOSED') return false;
-    if (job.ended_at || job.pipeline_ended_at) return false;
-
-    const isValidDeadline = job.deadline &&
-      job.deadline !== 'null' &&
-      job.deadline !== 'undefined' &&
-      job.deadline.toString().trim() !== '' &&
-      job.deadline !== '0000-00-00' &&
-      !isNaN(new Date(job.deadline).getTime());
-
-    if (isValidDeadline) {
-      const isExpired = new Date(job.deadline).setHours(23, 59, 59, 999) < Date.now();
-      if (isExpired) return false;
-    }
-
-    return statusUpper === 'OPEN' || !job.status;
-  };
+  const isJobActiveClient = (job: any) => isJobActive(job);
 
   const fetchApplicants = async () => {
     if (!user?.id) return;

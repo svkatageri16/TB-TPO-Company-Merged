@@ -47,8 +47,8 @@ async function runVerification() {
   // 1. Initialize DB and Express Server
   await initDb();
 
-  const companyToken = generateToken({ id: 1, userId: 1, email: 'company@test.com', role: 'COMPANY' });
-  const subHrToken = generateToken({ id: 2, userId: 2, email: 'subhr@test.com', role: 'COMPANY_SUB_HR', isSubHr: true });
+  const companyToken = generateToken({ id: 1, userId: 1, email: 'company@test.com', role: 'COMPANY', companyId: 1 });
+  const subHrToken = generateToken({ id: 2, userId: 2, email: 'subhr@test.com', role: 'COMPANY_SUB_HR', isSubHr: true, companyId: 1 });
   const studentToken = generateToken({ id: 10, userId: 10, email: 'student@test.com', role: 'STUDENT' });
 
   app = express();
@@ -82,6 +82,7 @@ async function runVerification() {
       await db.query("INSERT OR REPLACE INTO users (id, email, password_hash, role) VALUES (2, 'subhr@test.com', 'hash', 'COMPANY_SUB_HR')");
       await db.query("INSERT OR REPLACE INTO users (id, email, password_hash, role) VALUES (10, 'student@test.com', 'hash', 'STUDENT')");
       await db.query("INSERT OR REPLACE INTO company_profiles (id, user_id, company_name) VALUES (1, 1, 'Test Company')");
+      await db.query("INSERT OR REPLACE INTO company_hr_profiles (user_id, company_id, role_type) VALUES (2, 1, 'SUB_HR')");
       await db.query("INSERT OR REPLACE INTO student_profiles (id, user_id, full_name) VALUES (10, 10, 'John Student')");
     } catch (e) {}
 

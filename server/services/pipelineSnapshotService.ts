@@ -123,8 +123,11 @@ export function mapStageToCanonicalKey(app: any): {
       }
       return { key: "technicalInterview", legacyKey: "interview" };
     }
-    if (stageTypeUpper === "SELECTED" || stageTypeUpper === "HIRED" || stageTypeUpper === "OFFER") {
+    if (stageTypeUpper === "SELECTED" || stageTypeUpper === "SHORTLISTED" || stageTypeUpper === "HIRED" || stageTypeUpper === "OFFER") {
       return { key: "selected", legacyKey: "selected" };
+    }
+    if (stageTypeUpper === "REJECTED" || stageTypeUpper === "REJECT" || stageTypeUpper === "WITHDRAWN" || stageTypeUpper === "CANCELLED") {
+      return { key: "rejected", legacyKey: "rejected" };
     }
   }
 
