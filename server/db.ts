@@ -57,6 +57,7 @@ function setupSQLite() {
     try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejected_by_user_id INTEGER NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_notification_status VARCHAR(50) DEFAULT 'NOT_REQUIRED'"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN rejection_notified_at DATETIME NULL"); } catch (e) {}
+    try { sqliteDb.exec("ALTER TABLE job_applications ADD COLUMN hired_at DATETIME NULL"); } catch (e) {}
     try { sqliteDb.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT DEFAULT NULL"); } catch (e) {}
     try { sqliteDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key)"); } catch (e) {}
     try {
@@ -905,7 +906,7 @@ export async function initDb() {
           id INT PRIMARY KEY AUTO_INCREMENT,
           job_id INT NOT NULL,
           stage_name VARCHAR(255) NOT NULL,
-          stage_type ENUM('APPLICATION', 'TEST', 'INTERVIEW_ONLINE', 'INTERVIEW_OFFLINE', 'CUSTOM') DEFAULT 'APPLICATION',
+          stage_type VARCHAR(100) DEFAULT 'APPLICATION',
           stage_order INT NOT NULL,
           description TEXT,
           config_json JSON,
@@ -958,7 +959,7 @@ export async function initDb() {
           job_id INT NOT NULL,
           student_id INT NOT NULL,
           current_stage_id INT,
-          status ENUM('APPLIED', 'IN_PROGRESS', 'SELECTED', 'REJECTED') DEFAULT 'APPLIED',
+          status VARCHAR(50) NOT NULL DEFAULT 'APPLIED',
           applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(student_id, job_id),
           FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
@@ -1046,7 +1047,16 @@ export async function initDb() {
         `);
       } catch (err) { /* ignore if already exists */ }
 
-      // Add rejection tracking columns to job_applications
+      // Add rejection tracking columns and column type modifications to job_applications & job_stages
+      try {
+        await connection.query(`ALTER TABLE job_applications MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'APPLIED'`);
+      } catch (e) {}
+      try {
+        await connection.query(`ALTER TABLE job_stages MODIFY COLUMN stage_type VARCHAR(100) DEFAULT 'APPLICATION'`);
+      } catch (e) {}
+      try {
+        await connection.query(`ALTER TABLE job_applications ADD COLUMN hired_at DATETIME NULL`);
+      } catch (e) {}
       try {
         await connection.query(`ALTER TABLE job_applications ADD COLUMN rejection_stage_id INT NULL`);
       } catch (e) {}

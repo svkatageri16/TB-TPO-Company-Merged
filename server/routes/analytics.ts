@@ -413,25 +413,9 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
     }
 
     if (!companyId) {
-      return res.json({
-        success: true,
-        data: {
-          scope: { jobStatus: rawJobStatus, jobId, companyUserId },
-          jobs: { total: 0, active: 0, ended: 0 },
-          applications: { total: 0, inPipeline: 0, inInterview: 0, selected: 0, rejected: 0, hired: 0 },
-          stats: { totalJobs: 0, activeJobs: 0, endedJobs: 0, totalApps: 0, totalApplicants: 0, totalHires: 0, totalViews: 0, applicationRate: 0 },
-          funnelData: [],
-          jobwiseApplications: [],
-          stageConversion: [],
-          timeToHire: { hiredCount: 0, overallAvgDays: null, jobWise: [] },
-          timeInStage: [],
-          topPerformingJobs: [],
-          lowPerformingJobs: [],
-          dropsAnalytics: [],
-          heldCandidateTasks: [],
-          candidateHoldAlerts: [],
-          filterOptions: { jobs: [], hrTeam: [] }
-        }
+      return res.status(403).json({
+        success: false,
+        message: "Authenticated Company context is required"
       });
     }
 
@@ -458,12 +442,23 @@ router.get("/employer/:companyUserId", authenticate, async (req: any, res) => {
       assignedJobIds,
       jobStatus: rawJobStatus,
       jobId,
-      days: String(req.query.days || 'all')
+      days: String(req.query.days || 'all'),
+      hrUserId: req.query.hrUserId ? String(req.query.hrUserId) : undefined
     });
 
     return res.json({
       success: true,
       data: {
+        applicants: metrics.applicants || [],
+        scopeMetrics: metrics.scopeMetrics || {
+          active: { totalJobs: 0, totalApplicants: 0, inPipeline: 0, inInterview: 0, shortlisted: 0, rejected: 0, hired: 0 },
+          ended: { totalJobs: 0, totalApplicants: 0, inPipeline: 0, inInterview: 0, shortlisted: 0, rejected: 0, hired: 0 },
+          all: { totalJobs: 0, totalApplicants: 0, inPipeline: 0, inInterview: 0, shortlisted: 0, rejected: 0, hired: 0 }
+        },
+        interviewsToday: metrics.interviewsToday || 0,
+        pendingInterviewConfirmations: metrics.pendingInterviewConfirmations || 0,
+        hiredByPeriod: metrics.hiredByPeriod || { thisMonth: 0, last3Months: 0, last6Months: 0, oneYear: 0 },
+        pendingActions: metrics.pendingActions || [],
         scope: {
           jobStatus: rawJobStatus,
           jobId,
@@ -638,10 +633,19 @@ router.get("/employer/:companyUserId/hiring-time", authenticate, async (req: any
       assignedJobIds = Array.from(allJobIds);
     }
 
-    const result = await getHiringTimeData(companyId, isSubHr, assignedJobIds, jobStatus);
+    const metrics = await getCompanyAnalyticsMetrics({
+      companyId: Number(companyId),
+      userId: Number(companyUserId),
+      isSubHr,
+      assignedJobIds,
+      jobStatus,
+      jobId: req.query.jobId ? String(req.query.jobId) : 'all',
+      days: req.query.days ? String(req.query.days) : 'all',
+      hrUserId: req.query.hrUserId ? String(req.query.hrUserId) : undefined
+    });
     res.json({
       success: true,
-      ...result
+      ...metrics.timeToHire
     });
   } catch (error) {
     console.error("Hiring Time Error:", error);

@@ -478,8 +478,9 @@ export function PipelineBoard() {
   };
 
   const handleUndoNonterminalStage = async (cand: any) => {
-    const appId = cand.application_id || cand.id;
-    const expectedCurrentStageId = cand.current_stage_id;
+    const appId = Number(cand.application_id || cand.id);
+    const rawStageId = cand.current_stage_id ?? cand.currentStageId;
+    const expectedCurrentStageId = Number(rawStageId);
 
     const selectedJob = jobs.find((j: any) => j.id.toString() === selectedJobId);
     const isClosed = selectedJob && (
@@ -496,7 +497,8 @@ export function PipelineBoard() {
         expectedCurrentStageId,
       });
       if (res.data && res.data.success) {
-        toast.success(res.data.message || "Stage reverted successfully.");
+        const restoredStage = res.data.restored_stage_name || res.data.restoredStageName;
+        toast.success(res.data.message || (restoredStage ? `Restored to ${restoredStage}` : "Stage reverted successfully."));
         await fetchData();
         window.dispatchEvent(new CustomEvent('vega:pipeline-updated'));
       } else {
@@ -514,7 +516,7 @@ export function PipelineBoard() {
 
   const updateCandidateStage = async (
     appId: number, 
-    newStage: string, 
+    newStage: string | number, 
     feedbackText?: string | null, 
     bypassFeedback?: boolean,
     notifyCandidateVal?: boolean,
@@ -545,7 +547,7 @@ export function PipelineBoard() {
 
     try {
       const cand = allApplicants.find((a) => a.application_id === appId);
-      let numericStageId = parseInt(newStage, 10);
+      let numericStageId = typeof newStage === "number" ? newStage : parseInt(String(newStage), 10);
       let action = overrideAction || "IN_PROGRESS";
 
       if (newStage === "REJECTED") {
@@ -584,7 +586,7 @@ export function PipelineBoard() {
         setFeedbackConfig({
           isOpen: true,
           appId,
-          newStage,
+          newStage: String(newStage),
           actionType: action as "SELECTED" | "REJECTED",
           candidateName: cand?.full_name || "Candidate",
           jobTitle: cand?.job_title || "Applied Position",
@@ -710,6 +712,11 @@ export function PipelineBoard() {
 
     if (action === "SCHEDULE_TEST") {
       setShowScheduleModal(true);
+      return;
+    }
+
+    if (action === "MOVE_REJECTED" || action === "REJECTED") {
+      await handleBulkReject();
       return;
     }
 
@@ -870,13 +877,24 @@ export function PipelineBoard() {
 
 
 
-  const getStageActionInfo = (candidate: any) => {
+  interface StageActionInfo {
+    disabled: boolean;
+    label: string;
+    nextId: string | number | null;
+    prevId: string | number | null;
+    reason: string;
+    nextLabel?: string;
+    prevLabel?: string | null;
+  }
+
+  const getStageActionInfo = (candidate: any): StageActionInfo => {
     const selectedJob = jobs.find((j: any) => j.id.toString() === selectedJobId);
     if (selectedJob && selectedJob.status === 'CLOSED') {
       return {
         disabled: true,
         label: "History Mode",
         nextId: null,
+        prevId: null,
         reason: "This job post has ended.",
       };
     }
@@ -893,6 +911,7 @@ export function PipelineBoard() {
         disabled: true,
         label: isRejectedCandidate(candidate) ? "Rejected" : "Selected",
         nextId: null,
+        prevId: null,
         reason: "Candidate is in a terminal stage.",
       };
     }
@@ -902,6 +921,7 @@ export function PipelineBoard() {
         disabled: true,
         label: "Select Job",
         nextId: null,
+        prevId: null,
         reason:
           "Select a specific job to advance candidates through its custom pipeline.",
       };
@@ -912,6 +932,7 @@ export function PipelineBoard() {
         disabled: true,
         label: "No Custom Stages",
         nextId: null,
+        prevId: null,
         reason: "No custom pipeline stages found for this job.",
       };
     }
@@ -929,6 +950,7 @@ export function PipelineBoard() {
         disabled: true,
         label: "Stage unavailable",
         nextId: null,
+        prevId: null,
         reason: "Custom stages do not match candidate job.",
       };
     }
@@ -982,6 +1004,7 @@ export function PipelineBoard() {
         disabled: true,
         label: "Stage unavailable",
         nextId: null,
+        prevId: null,
         reason: "Unable to resolve unique current stage for candidate in this job.",
       };
     }
@@ -1011,7 +1034,7 @@ export function PipelineBoard() {
     };
   };
 
-  const getNextStageInfo = (candidate: any) => {
+  const getNextStageInfo = (candidate: any): StageActionInfo => {
     const cand =
       typeof candidate === "string"
         ? allApplicants.find((a) => a.status === candidate) || {
@@ -1022,6 +1045,9 @@ export function PipelineBoard() {
     return {
       label: actionInfo.label,
       nextId: actionInfo.nextId?.toString() || null,
+      prevId: actionInfo.prevId?.toString() || null,
+      prevLabel: actionInfo.prevLabel || null,
+      nextLabel: actionInfo.nextLabel,
       disabled: actionInfo.disabled,
       reason: actionInfo.reason,
     };
@@ -1354,39 +1380,104 @@ export function PipelineBoard() {
   };
 
   // Bulk rejecting
+  const [isProcessingBulk, setIsProcessingBulk] = useState(false);
+
   const handleBulkReject = async () => {
+    if (isProcessingBulk) return;
+
     if (selectedJobId === "ALL") {
       toast.error("Select a specific job to drop / reject candidates.");
       return;
     }
-    toast.success(`Dropping ${selectedCandidates.length} candidate(s)...`);
+
+    const selectedJob = jobs.find((j: any) => j.id.toString() === selectedJobId);
+    const isClosed = selectedJob && (
+      selectedJob.status === 'CLOSED' || 
+      (selectedJob.deadline && new Date(selectedJob.deadline).setHours(23, 59, 59, 999) < new Date().getTime())
+    );
+    if (isClosed) {
+      toast.error("This job post has ended. Stage movement is disabled in history mode.");
+      return;
+    }
+
+    if (selectedCandidates.length === 0) return;
+
+    setIsProcessingBulk(true);
+    toast(`Processing rejection for ${selectedCandidates.length} candidate(s)...`);
+
+    const successIds: number[] = [];
+    const failedIds: number[] = [];
+    const errors: Array<{ id: number; status?: number; message?: string }> = [];
+
     for (const id of selectedCandidates) {
-      const cand = allApplicants.find((a) => a.application_id === id);
-      if (cand) {
-        const numericStageId = parseInt(cand.status, 10);
-        if (!isNaN(numericStageId)) {
-          try {
-            await api.post(`/jobs/update-stage`, {
-              applicationId: id,
-              stageId: numericStageId,
-              action: "REJECTED",
-              notes: `Application bulk rejected`,
-            });
-            setAllApplicants((prev) =>
-              prev.map((a) =>
-                a.application_id === id ? { ...a, status: "REJECTED" } : a,
-              ),
-            );
-            markAsContacted(id);
-          } catch (e) {
-            console.error(e);
-          }
+      const appId = Number(id);
+      const isValidApp = Number.isInteger(appId) && appId > 0;
+      const cand = isValidApp ? allApplicants.find((a) => Number(a.application_id) === appId) : null;
+
+      if (!cand || !isValidApp) {
+        failedIds.push(id);
+        errors.push({ id, message: "Invalid candidate or application ID." });
+        continue;
+      }
+
+      const rawStageId = cand.current_stage_id ?? cand.currentStageId;
+      const currentStageId = Number(rawStageId);
+      const isValidStage = Number.isInteger(currentStageId) && currentStageId > 0;
+
+      if (!isValidStage) {
+        failedIds.push(id);
+        errors.push({ id, message: "Missing or invalid current stage ID." });
+        continue;
+      }
+
+      try {
+        const res = await api.post(`/jobs/update-stage`, {
+          applicationId: appId,
+          stageId: currentStageId,
+          action: "REJECTED",
+          notes: "Application bulk rejected",
+          notifyCandidate: true,
+        });
+
+        const isSuccessStatus = res.status >= 200 && res.status < 300;
+        const isSuccessData = res.data && res.data.success !== false;
+        const isRejectedCommitted = !res.data?.status || res.data.status === "REJECTED";
+        const isRejectedBucket = !res.data?.canonical_stage_key || String(res.data.canonical_stage_key).toLowerCase() === "rejected";
+
+        if (isSuccessStatus && isSuccessData && isRejectedCommitted && isRejectedBucket) {
+          successIds.push(id);
+          markAsContacted(id);
+        } else {
+          failedIds.push(id);
+          errors.push({ id, status: res.status, message: res.data?.message || "Rejection failed on server." });
         }
+      } catch (err: any) {
+        failedIds.push(id);
+        const status = err.response?.status;
+        const message = err.response?.data?.message || err.message;
+        errors.push({ id, status, message });
       }
     }
-    setSelectedCandidates([]);
-    toast.success("Candidates processed successfully");
-    window.dispatchEvent(new CustomEvent('vega:pipeline-updated'));
+
+    try {
+      await fetchData();
+      setSelectedCandidates([]);
+      window.dispatchEvent(new CustomEvent('vega:pipeline-updated'));
+
+      if (failedIds.length === 0 && successIds.length > 0) {
+        toast.success(
+          successIds.length === 1
+            ? "1 candidate rejected successfully."
+            : `${successIds.length} candidates rejected successfully.`
+        );
+      } else if (successIds.length > 0 && failedIds.length > 0) {
+        toast(`${successIds.length} candidate${successIds.length === 1 ? '' : 's'} rejected; ${failedIds.length} failed.`);
+      } else {
+        toast.error(errors[0]?.message || "Candidate rejection failed.");
+      }
+    } finally {
+      setIsProcessingBulk(false);
+    }
   };
 
   const handleNotifyCandidate = async (applicationId: number) => {
@@ -2330,32 +2421,72 @@ export function PipelineBoard() {
                                     </button>
                                   </div>
                                 ) : (
-                                  <button
-                                    onClick={() => {
-                                      if (selectedJobId === "ALL") {
-                                        toast.error(
-                                          "Select a specific job to advance candidates through its custom pipeline.",
-                                        );
-                                        return;
-                                      }
-                                      if (stageInfo.nextId) {
-                                        updateCandidateStage(
-                                          cand.application_id,
-                                          stageInfo.nextId,
-                                        );
-                                      }
-                                    }}
-                                    disabled={stageInfo.disabled}
-                                    className={`px-3 py-1.5 font-extrabold rounded-xl text-[10px] uppercase tracking-wider transition-all shadow-sm ${
-                                      stageInfo.disabled
-                                        ? "bg-slate-100 text-slate-350 border border-slate-200/50 cursor-not-allowed select-none"
-                                        : "bg-blue-600 text-white hover:bg-blue-750 cursor-pointer active:scale-95"
-                                    }`}
-                                  >
-                                    {stageInfo.disabled
-                                      ? stageInfo.label
-                                      : "Advance"}
-                                  </button>
+                                  <div className="flex items-center justify-center gap-2">
+                                    {/* Undo Stage button for nonterminal candidates */}
+                                    {stageInfo.prevId && !(() => {
+                                      const curJob = jobs.find((j: any) => j.id.toString() === selectedJobId);
+                                      return curJob && (curJob.status === 'CLOSED' || (curJob.deadline && new Date(curJob.deadline).setHours(23, 59, 59, 999) < new Date().getTime()));
+                                    })() && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (selectedJobId === "ALL") {
+                                            toast.error("Select a specific job to move candidates across custom stages.");
+                                            return;
+                                          }
+                                          handleUndoNonterminalStage(cand);
+                                        }}
+                                        className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider shadow-sm flex items-center gap-1 cursor-pointer transition-all active:scale-95 shrink-0"
+                                        title="Undo stage move and return candidate to previous phase"
+                                      >
+                                        <RefreshCw size={11} /> Undo Stage
+                                      </button>
+                                    )}
+
+                                    {/* Advance button */}
+                                    <button
+                                      onClick={() => {
+                                        if (selectedJobId === "ALL") {
+                                          toast.error(
+                                            "Select a specific job to advance candidates through its custom pipeline.",
+                                          );
+                                          return;
+                                        }
+                                        if (stageInfo.nextId) {
+                                          updateCandidateStage(
+                                            cand.application_id,
+                                            stageInfo.nextId,
+                                          );
+                                        }
+                                      }}
+                                      disabled={stageInfo.disabled}
+                                      className={`px-3 py-1.5 font-extrabold rounded-xl text-[10px] uppercase tracking-wider transition-all shadow-sm ${
+                                        stageInfo.disabled
+                                          ? "bg-slate-100 text-slate-350 border border-slate-200/50 cursor-not-allowed select-none"
+                                          : "bg-blue-600 text-white hover:bg-blue-700 cursor-pointer active:scale-95"
+                                      }`}
+                                    >
+                                      {stageInfo.disabled
+                                        ? stageInfo.label
+                                        : "Advance"}
+                                    </button>
+
+                                    {/* Reject button */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (selectedJobId === "ALL") {
+                                          toast.error("Select a specific job to drop / reject candidates.");
+                                          return;
+                                        }
+                                        updateCandidateStage(cand.application_id, "REJECTED");
+                                      }}
+                                      className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-xl text-[10px] font-black uppercase tracking-wider shadow-sm flex items-center gap-1 cursor-pointer transition-all active:scale-95 shrink-0"
+                                      title="Drop / Reject candidate"
+                                    >
+                                      <ThumbsDown size={11} /> Reject
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             </td>

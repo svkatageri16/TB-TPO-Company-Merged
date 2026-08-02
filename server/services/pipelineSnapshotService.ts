@@ -224,7 +224,10 @@ export async function getPipelineSnapshot(
       a.status,
       a.rejection_stage_id,
       a.rejection_feedback,
+      a.rejection_feedback as rejection_reason,
       a.rejected_at,
+      a.rejected_by_user_id,
+      rej_js.stage_name as rejection_stage_name,
       a.rejection_notification_status,
       a.rejection_notified_at,
       a.applied_at,
@@ -264,6 +267,7 @@ export async function getPipelineSnapshot(
     FROM job_applications a
     JOIN jobs j ON a.job_id = j.id
     LEFT JOIN job_stages js ON a.current_stage_id = js.id
+    LEFT JOIN job_stages rej_js ON a.rejection_stage_id = rej_js.id
     LEFT JOIN student_profiles sp ON a.student_id = sp.id
     LEFT JOIN users u ON sp.user_id = u.id
     LEFT JOIN talent_scores ts ON u.id = ts.user_id
@@ -345,8 +349,14 @@ export async function getPipelineSnapshot(
         ended_at: a.ended_at,
         pipeline_ended_at: a.pipeline_ended_at,
       });
+      const ended = isJobEnded({
+        status: a.job_status,
+        deadline: a.deadline,
+        ended_at: a.ended_at,
+        pipeline_ended_at: a.pipeline_ended_at,
+      });
       if (scopeVal === "active" && !active) return false;
-      if (scopeVal === "ended" && active) return false;
+      if (scopeVal === "ended" && !ended) return false;
     }
 
     // Search query filter
@@ -403,6 +413,13 @@ export async function getPipelineSnapshot(
       latest_test_status: app.latest_test_status ?? null,
       latest_test_violations_count: app.latest_test_violations_count !== undefined && app.latest_test_violations_count !== null ? Number(app.latest_test_violations_count) : 0,
       latest_test_integrity_flag: (app.latest_test_violations_count || 0) > 0 ? 1 : 0,
+      raw_status: app.status || app.app_status || "",
+      rejected_at: app.rejected_at || null,
+      rejection_reason: app.rejection_reason || app.rejection_feedback || null,
+      rejection_feedback: app.rejection_feedback || app.rejection_reason || null,
+      rejection_stage_id: app.rejection_stage_id !== undefined && app.rejection_stage_id !== null ? Number(app.rejection_stage_id) : null,
+      rejection_stage_name: app.rejection_stage_name || null,
+      rejected_by_user_id: app.rejected_by_user_id !== undefined && app.rejected_by_user_id !== null ? Number(app.rejected_by_user_id) : null,
     };
 
     const { key } = mapStageToCanonicalKey(cand);

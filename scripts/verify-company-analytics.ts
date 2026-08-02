@@ -117,7 +117,7 @@ async function runVerification() {
     await db.query("DELETE FROM jobs WHERE company_id IN (?, ?)", testCompanyIds);
     await db.query("DELETE FROM company_profiles WHERE id IN (?, ?)", testCompanyIds);
     await db.query("DELETE FROM student_profiles WHERE id BETWEEN 7001 AND 7020 OR user_id BETWEEN 8001 AND 8020");
-    await db.query("DELETE FROM users WHERE id BETWEEN 8001 AND 8020 OR email IN ('superhr@google.com', 'subhr1@google.com', 'subhr2@google.com', 'corp2@test.com') OR email LIKE 'student%@test.com'");
+    await db.query("DELETE FROM users WHERE id BETWEEN 8001 AND 8150 OR email IN ('superhr@google.com', 'subhr1@google.com', 'subhr2@google.com', 'corp2@test.com') OR email LIKE 'student%@test.com'");
   } catch (e: any) {
     console.log("Notice during table cleanup:", e.message);
   }
@@ -126,7 +126,6 @@ async function runVerification() {
   await db.query("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, 'dummy', 'COMPANY')", [8001, 'superhr@google.com']);
   await db.query("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, 'dummy', 'COMPANY')", [8002, 'subhr1@google.com']);
   await db.query("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, 'dummy', 'COMPANY')", [8003, 'subhr2@google.com']);
-  await db.query("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, 'dummy', 'STUDENT')", [8015, 'student12@test.com']);
   await db.query("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, 'dummy', 'COMPANY')", [8020, 'corp2@test.com']);
 
   await db.query("INSERT INTO company_profiles (id, user_id, company_name) VALUES (?, ?, ?)", [9001, 8001, "Google Test Corp"]);
@@ -137,12 +136,10 @@ async function runVerification() {
   await db.query("INSERT INTO company_hr_profiles (user_id, company_id, role_type) VALUES (?, ?, 'SUB_HR')", [8003, 9001]);
 
   // Candidates & Student Profiles
-  for (let i = 1; i <= 15; i++) {
-    const userId = 8003 + i;
+  for (let i = 1; i <= 20; i++) {
+    const userId = 8100 + i;
     const studentId = 7000 + i;
-    if (userId !== 8015) {
-      await db.query("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, 'dummy', 'STUDENT')", [userId, `student${i}@test.com`]);
-    }
+    await db.query("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, 'dummy', 'STUDENT')", [userId, `student${i}@test.com`]);
     await db.query("INSERT INTO student_profiles (id, user_id, full_name) VALUES (?, ?, ?)", [studentId, userId, `Candidate ${i}`]);
   }
 
@@ -151,7 +148,7 @@ async function runVerification() {
   const tokenSubHr1 = jwt.sign({ userId: 8002, role: 'COMPANY', email: 'subhr1@google.com' }, JWT_SECRET);
   const tokenSubHr2 = jwt.sign({ userId: 8003, role: 'COMPANY', email: 'subhr2@google.com' }, JWT_SECRET);
   const tokenCompB = jwt.sign({ userId: 8020, role: 'COMPANY', email: 'corp2@test.com' }, JWT_SECRET);
-  const tokenNoComp = jwt.sign({ userId: 8015, role: 'STUDENT', email: 'student12@test.com' }, JWT_SECRET);
+  const tokenNoComp = jwt.sign({ userId: 8112, role: 'STUDENT', email: 'student12@test.com' }, JWT_SECRET);
 
   // Jobs
   const todayStr = new Date().toISOString().split('T')[0];
@@ -244,6 +241,36 @@ async function runVerification() {
     [9303, 9001, null, "Zero View Draft Post", "Desc 3", "INSIGHTS", 0, 0, 0, 0, twoDaysAgo]
   );
 
+  // Extra Prompt 3 Fixtures
+  const fortyFiveDaysAgo = new Date(Date.now() - 45 * 86400000).toISOString();
+  const sixtyDaysAgo = new Date(Date.now() - 60 * 86400000).toISOString();
+  const eightDaysAgo = new Date(Date.now() - 8 * 86400000).toISOString();
+
+  // Out of 30 days application
+  await db.query("INSERT INTO job_applications (id, job_id, student_id, current_stage_id, status, applied_at) VALUES (?, ?, ?, ?, ?, ?)", [9212, 9101, 7012, 9501, 'APPLIED', fortyFiveDaysAgo]);
+
+  // Out of 30 days hire
+  await db.query("INSERT INTO job_applications (id, job_id, student_id, current_stage_id, status, applied_at) VALUES (?, ?, ?, ?, ?, ?)", [9213, 9103, 7013, null, 'HIRED', sixtyDaysAgo]);
+  await db.query("INSERT INTO application_history (application_id, stage_id, action, created_at) VALUES (?, ?, ?, ?)", [9213, 9501, 'INITIAL', sixtyDaysAgo]);
+  await db.query("INSERT INTO application_history (application_id, stage_id, action, created_at) VALUES (?, ?, ?, ?)", [9213, 9506, 'HIRED', fortyFiveDaysAgo]);
+
+  // Out of 30 days Drop
+  await db.query(
+    "INSERT INTO drops (id, company_id, job_id, title, description, type, views_count, likes_count, comments_count, shares_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [9304, 9001, null, "Old Announcement", "Desc Old", "ANNOUNCEMENT", 20, 2, 1, 0, fortyFiveDaysAgo]
+  );
+
+  // Active job candidate held 8 days (Candidate 7014)
+  await db.query("INSERT INTO job_applications (id, job_id, student_id, current_stage_id, status, applied_at) VALUES (?, ?, ?, ?, ?, ?)", [9214, 9101, 7014, 9503, 'IN_PROGRESS', fifteenDaysAgo]);
+  await db.query("INSERT INTO application_history (application_id, stage_id, action, created_at) VALUES (?, ?, ?, ?)", [9214, 9501, 'INITIAL', fifteenDaysAgo]);
+  await db.query("INSERT INTO application_history (application_id, stage_id, action, created_at) VALUES (?, ?, ?, ?)", [9214, 9503, 'ADVANCE', eightDaysAgo]);
+
+  // Raw SELECTED only (Candidate 7015)
+  await db.query("INSERT INTO job_applications (id, job_id, student_id, current_stage_id, status, applied_at) VALUES (?, ?, ?, ?, ?, ?)", [9215, 9101, 7015, 9506, 'SELECTED', tenDaysAgo]);
+
+  // Raw HIRED without application_history HIRED entry (Candidate 7016)
+  await db.query("INSERT INTO job_applications (id, job_id, student_id, current_stage_id, status, applied_at) VALUES (?, ?, ?, ?, ?, ?)", [9216, 9102, 7016, null, 'HIRED', tenDaysAgo]);
+
   await db.query("INSERT INTO drop_views (drop_id, viewer_user_id) VALUES (?, ?)", [9301, 8004]);
   await db.query("INSERT INTO drop_likes (drop_id, user_id) VALUES (?, ?)", [9301, 8004]);
   await db.query("INSERT INTO drop_comments (drop_id, user_id, comment) VALUES (?, ?, ?)", [9301, 8004, "Great update!"]);
@@ -251,7 +278,7 @@ async function runVerification() {
   console.log("✅ Fixtures successfully seeded.\n");
 
   let passedAssertions = 0;
-  const totalAssertions = 64;
+  const totalAssertions = 90;
 
   function assert(condition: boolean, assertionNum: number, description: string) {
     if (condition) {
@@ -390,20 +417,20 @@ async function runVerification() {
   assert(snapshotAll.summary.inInterview === metricsAll.stats.inInterview, 22, "In Interview equals Analytics");
   assert(snapshotAll.summary.selected === metricsAll.stats.totalShortlisted, 23, "Shortlisted equals Analytics");
   assert(snapshotAll.summary.rejected === metricsAll.stats.totalRejected, 24, "Rejected equals Analytics");
-  assert(metricsAll.stats.totalHired === 2, 25, "Hired equals Analytics");
+  assert(metricsAll.stats.totalHired === 4, 25, "Hired equals Analytics");
 
   assert(metricsActive.stats.activeJobs === 2, 26, "Active filter matches");
   assert(metricsEnded.stats.endedJobs === 1, 27, "Ended filter matches");
   assert(metricsAll.stats.totalJobs === 4, 28, "All filter matches");
 
   const metricsJob1 = await getCompanyAnalyticsMetrics({ companyId: 9001, jobId: 9101 });
-  assert(metricsJob1.stats.totalApps === 10, 29, "Exact-job filter matches");
+  assert(metricsJob1.stats.totalApps === 13, 29, "Exact-job filter matches");
 
   const metricsSuperHr = await getCompanyAnalyticsMetrics({ companyId: 9001, userId: 8001, isSubHr: false });
-  assert(metricsSuperHr.stats.totalApps === 11, 30, "Super HR scope works");
+  assert(metricsSuperHr.stats.totalApps === 16, 30, "Super HR scope works");
 
   const metricsSubHr = await getCompanyAnalyticsMetrics({ companyId: 9001, userId: 8002, isSubHr: true, assignedJobIds: [9101] });
-  assert(metricsSubHr.stats.totalApps === 10, 31, "assigned Sub HR scope works");
+  assert(metricsSubHr.stats.totalApps === 13, 31, "assigned Sub HR scope works");
 
   const metricsEmptySubHr = await getCompanyAnalyticsMetrics({ companyId: 9001, userId: 8003, isSubHr: true, assignedJobIds: [] });
   assert(metricsEmptySubHr.stats.totalApps === 0, 32, "empty-scope Sub HR sees zero");
@@ -426,7 +453,7 @@ async function runVerification() {
   assert(true, 46, "Hold Alerts exclude terminal candidates");
   assert(metricsAll.topPerformingJobs.length > 0, 47, "Top jobs rank primarily by hires");
   assert(metricsAll.lowPerformingJobs.length > 0, 48, "Low-job reasons are metric-based");
-  assert(metricsAll.lowPerformingJobs.every((j: any) => APPROVED_SUGGESTION_TEMPLATES.includes(j.suggestedAction)), 49, "Every suggestion belongs to approved 10-item library");
+  assert(metricsAll.lowPerformingJobs.every((j: any) => j.suggestions.every((s: string) => APPROVED_SUGGESTION_TEMPLATES.includes(s))), 49, "Every suggestion belongs to approved 10-item library");
 
   // 50-59: Drops Assertions
   const drop1 = metricsAll.dropsAnalytics.find((d: any) => d.id === 9301);
@@ -478,6 +505,236 @@ async function runVerification() {
     expectedCurrentStageId: null
   });
   assert(endedJobMutationRes.status === 400, 64, "Ended job mutation is blocked (returns 400)");
+
+  // 65. GET /api/analytics/employer/:companyUserId contract response validation
+  const employerRes = await httpReq('GET', '/api/analytics/employer/8001', tokenSuperHr);
+  const empData = employerRes.json?.data;
+  assert(
+    employerRes.status === 200 &&
+    Array.isArray(empData?.applicants) &&
+    empData?.scopeMetrics?.active &&
+    empData?.hiredByPeriod?.thisMonth !== undefined &&
+    Array.isArray(empData?.pendingActions),
+    65,
+    "GET /api/analytics/employer contract contains applicants, scopeMetrics, hiredByPeriod, and pendingActions"
+  );
+
+  // 66. Every applicant has application_id, job_id, job_title, full_name, raw_status, canonical_stage_key
+  const appsList = empData?.applicants || [];
+  const invalidApp = appsList.find((a: any) => 
+    !a.application_id ||
+    !a.job_id ||
+    typeof a.job_title !== 'string' ||
+    typeof a.full_name !== 'string' ||
+    typeof a.raw_status !== 'string' ||
+    !a.canonical_stage_key
+  );
+  if (invalidApp) {
+    console.error("Invalid applicant item sample:", JSON.stringify(invalidApp));
+  }
+  const validApplicantContract = appsList.length > 0 && !invalidApp;
+  assert(validApplicantContract, 66, "Every applicant item contains all required contract fields");
+
+  // 67. Application IDs are unique in applicants array
+  const appIds = appsList.map((a: any) => a.application_id);
+  const uniqueAppIds = new Set(appIds);
+  assert(appIds.length === uniqueAppIds.size, 67, "Application IDs in applicants response are unique");
+
+  // 68. Missing Company context returns 403
+  const employerNoCompRes = await httpReq('GET', '/api/analytics/employer/8112', tokenNoComp);
+  assert(
+    employerNoCompRes.status === 403 &&
+    employerNoCompRes.json?.message === "Authenticated Company context is required",
+    68,
+    "User without Company context receives 403 'Authenticated Company context is required'"
+  );
+
+  // 69. Unassigned Sub HR receives zero scoped applicants
+  const employerSubHr2Res = await httpReq('GET', '/api/analytics/employer/8003', tokenSubHr2);
+  assert(
+    employerSubHr2Res.status === 200 &&
+    employerSubHr2Res.json?.data?.applicants?.length === 0,
+    69,
+    "Unassigned Sub HR receives zero scoped applicants"
+  );
+
+  // 70. Cross-company access is blocked (403)
+  const employerCrossRes = await httpReq('GET', '/api/analytics/employer/8020', tokenSuperHr);
+  assert(
+    employerCrossRes.status === 403,
+    70,
+    "Cross-company employer analytics access is blocked with 403"
+  );
+
+  // --- PROMPT 3 CONTRACT & VERIFICATION GATE ASSERTIONS (71-90) ---
+
+  // 71. Canonical Contract 1: Job-wise Application Performance exact fields & no canonical title
+  const jwItem = metricsAll.jobwiseApplications[0];
+  const jwHasFields = jwItem &&
+    typeof jwItem.jobId === 'number' &&
+    typeof jwItem.jobTitle === 'string' &&
+    ['ACTIVE', 'ENDED'].includes(jwItem.lifecycleStatus) &&
+    typeof jwItem.openings === 'number' &&
+    typeof jwItem.totalApplications === 'number' &&
+    typeof jwItem.progressedBeyondApplied === 'number' &&
+    typeof jwItem.currentInPipeline === 'number' &&
+    typeof jwItem.currentInInterview === 'number' &&
+    typeof jwItem.shortlisted === 'number' &&
+    typeof jwItem.hired === 'number' &&
+    typeof jwItem.rejected === 'number' &&
+    typeof jwItem.applicationToShortlistPercentage === 'number' &&
+    typeof jwItem.applicationToHirePercentage === 'number' &&
+    typeof jwItem.openingFillPercentage === 'number' &&
+    (jwItem as any).title === undefined;
+  assert(Boolean(jwHasFields), 71, "Job-wise Applications matches canonical contract exact fields and excludes duplicate title");
+
+  // 72. Canonical Contract 2: Time-to-Hire exact fields
+  const tth = metricsAll.timeToHire;
+  const tthItem = tth.jobWise[0];
+  const tthOk = tth &&
+    typeof tth.hiredCount === 'number' &&
+    (tth.overallAvgDays === null || typeof tth.overallAvgDays === 'number') &&
+    Array.isArray(tth.jobWise) &&
+    (!tthItem || (
+      typeof tthItem.jobId === 'number' &&
+      typeof tthItem.jobTitle === 'string' &&
+      typeof tthItem.hiredCount === 'number' &&
+      typeof tthItem.avgDays === 'number' &&
+      (tthItem as any).title === undefined
+    ));
+  assert(Boolean(tthOk), 72, "Time-to-Hire matches canonical contract exact fields");
+
+  // 73. Canonical Contract 3: Top Performing Jobs exact fields
+  const topItem = metricsAll.topPerformingJobs[0];
+  const topOk = topItem &&
+    typeof topItem.jobId === 'number' &&
+    typeof topItem.jobTitle === 'string' &&
+    typeof topItem.rank === 'number' &&
+    typeof topItem.totalApplications === 'number' &&
+    typeof topItem.openings === 'number' &&
+    typeof topItem.hiredCount === 'number' &&
+    typeof topItem.applicationToHirePercentage === 'number' &&
+    typeof topItem.openingFillPercentage === 'number' &&
+    typeof topItem.progressionRate === 'number' &&
+    typeof topItem.performanceLabel === 'string' &&
+    Array.isArray(topItem.performanceReasons) &&
+    (topItem as any).title === undefined;
+  assert(Boolean(topOk), 73, "Top Performing Jobs matches canonical contract exact fields");
+
+  // 74. Canonical Contract 4: Low Performing Jobs exact fields
+  const lowItem = metricsAll.lowPerformingJobs[0];
+  const lowOk = lowItem &&
+    typeof lowItem.jobId === 'number' &&
+    typeof lowItem.jobTitle === 'string' &&
+    typeof lowItem.metrics === 'object' &&
+    typeof lowItem.metrics.totalApplications === 'number' &&
+    Array.isArray(lowItem.performanceReasons) &&
+    typeof lowItem.comparisons === 'object' &&
+    typeof lowItem.comparisons.companyMedianApplications === 'number' &&
+    Array.isArray(lowItem.suggestions) &&
+    (lowItem as any).title === undefined;
+  assert(Boolean(lowOk), 74, "Low Performing Jobs matches canonical contract exact fields");
+
+  // 75. Days Filter (days=30 excludes >30 days records, days=all includes them)
+  const metrics30 = await getCompanyAnalyticsMetrics({ companyId: 9001, days: 30 });
+  const app9212InAll = metricsAll.applicants.some((a: any) => a.application_id === 9212);
+  const app9212In30 = metrics30.applicants.some((a: any) => a.application_id === 9212);
+  const drop9304InAll = metricsAll.dropsAnalytics.some((d: any) => d.id === 9304);
+  const drop9304In30 = metrics30.dropsAnalytics.some((d: any) => d.id === 9304);
+  assert(app9212InAll && !app9212In30 && drop9304InAll && !drop9304In30, 75, "Days filter (30 vs all) correctly excludes out-of-range applications and drops");
+
+  // 76. Days Filter Invalid Param Handling (gracefully defaults without NaN)
+  const metricsInvalidDays = await getCompanyAnalyticsMetrics({ companyId: 9001, days: "invalid_value" });
+  assert(!isNaN(metricsInvalidDays.stats.totalApps) && metricsInvalidDays.stats.totalApps > 0, 76, "Invalid days parameter defaults gracefully without producing NaN");
+
+  // 77. HR Scope Filter: HR A sees assigned Job 9101, but not unassigned Job 9102
+  const metricsHrA = await getCompanyAnalyticsMetrics({ companyId: 9001, userId: 8002, isSubHr: true, assignedJobIds: [9101], hrUserId: 8002 });
+  const hrAJobIds = metricsHrA.jobwiseApplications.map((j: any) => j.jobId);
+  assert(hrAJobIds.includes(9101) && !hrAJobIds.includes(9102), 77, "HR scope filter restricts Sub HR view to assigned jobs only");
+
+  // 78. HR Scope Filter: Cross-company hrUserId parameter is rejected/ignored safely
+  const metricsCrossHr = await getCompanyAnalyticsMetrics({ companyId: 9001, hrUserId: 8020 });
+  assert(metricsCrossHr.jobwiseApplications.length === 0, 78, "Cross-company hrUserId yields safe empty result");
+
+  // 79. Frontend-supplied hrUserId cannot expand authenticated Sub HR scope
+  const metricsSubHrTamper = await getCompanyAnalyticsMetrics({ companyId: 9001, userId: 8003, isSubHr: true, assignedJobIds: [], hrUserId: 8001 });
+  assert(metricsSubHrTamper.stats.totalApps === 0, 79, "Frontend hrUserId parameter cannot expand authenticated Sub HR scope");
+
+  // 80. Lifecycle Filter: active includes only Active, ended includes only Ended, Draft/Archived not in Ended
+  const activeJobsOnly = metricsActive.jobwiseApplications.every((j: any) => j.lifecycleStatus === 'ACTIVE');
+  const endedJobsOnly = metricsEnded.jobwiseApplications.every((j: any) => j.lifecycleStatus === 'ENDED');
+  const draftInEnded = metricsEnded.jobwiseApplications.some((j: any) => j.jobId === 9104);
+  assert(activeJobsOnly && endedJobsOnly && !draftInEnded, 80, "Lifecycle filter strictly isolates Active and Ended jobs; Draft/Archived do not enter Ended");
+
+  // 81. Exact Job-wise Performance Metrics for Job 9101
+  const jw9101 = metricsAll.jobwiseApplications.find((j: any) => j.jobId === 9101);
+  const jw9101Exact = jw9101 &&
+    jw9101.openings === 3 &&
+    jw9101.hired === 2 &&
+    jw9101.openingFillPercentage === 67;
+  assert(Boolean(jw9101Exact), 81, "Exact Job-wise performance values verified for Job 9101");
+
+  // 82. Time-to-Hire: Only confirmed HIRED with history timestamp contributes; raw SELECTED / HIRED without history excluded
+  const rawHiredNoHistIncluded = tth.jobWise.some((j: any) => j.jobId === 9216);
+  assert(!rawHiredNoHistIncluded && tth.overallAvgDays !== null && tth.overallAvgDays > 0, 82, "Time-to-Hire calculation excludes raw status without history entry and calculates exact average");
+
+  // 83. Stage Conversion: Candidate Applied -> Assessment directly does not fabricate AI Screening
+  const convScreen = metricsAll.stageConversion.find((s: any) => s.stage.includes('AI Screening'));
+  assert(convScreen !== undefined && convScreen.fromCount >= convScreen.toCount, 83, "Stage conversion uses historical reach and does not fabricate skipped stages");
+
+  // 84. Time-in-Stage: Applied is first, Shortlisted is final, no duplicate Applied
+  const stagesList = metricsAll.timeInStage.map((s: any) => s.stage);
+  const timeInStageOk = stagesList[0] === 'Applied' &&
+    stagesList[stagesList.length - 1] === 'Shortlisted' &&
+    stagesList.filter(s => s === 'Applied').length === 1;
+  assert(timeInStageOk, 84, "Time-in-stage has correct canonical sequence without duplicate Applied");
+
+  // 85. Candidate Hold Alerts: Only Active-job nonterminal candidate held >7 days appears with real fields
+  const alert814 = metricsAll.candidateHoldAlerts.find((a: any) => a.applicationId === 9214);
+  const alertEnded = metricsAll.candidateHoldAlerts.find((a: any) => a.jobId === 9103);
+  const alertFieldsOk = alert814 &&
+    alert814.candidateName &&
+    alert814.jobTitle &&
+    alert814.currentStage &&
+    alert814.responsibleHr &&
+    alert814.daysInStage >= 8 &&
+    alert814.lastTransitionDate &&
+    alert814.reason;
+  assert(Boolean(alertFieldsOk) && !alertEnded, 85, "Hold Alerts include only Active, nonterminal 8+ day candidates with all required fields");
+
+  // 86. Top Performing Jobs: Ranking priority places job with most hires first
+  const top1 = metricsAll.topPerformingJobs[0];
+  assert(top1 && top1.jobId === 9101 && top1.hiredCount === 2 && top1.performanceReasons.length > 0, 86, "Top Performing Jobs ranks primarily by confirmed hires and provides measured reasons");
+
+  // 87. Low Performing Jobs: Contains dynamic reasons, comparisons with median, and suggestions from approved library
+  const low1 = metricsAll.lowPerformingJobs[0];
+  const low1Ok = low1 &&
+    low1.performanceReasons.length > 0 &&
+    low1.comparisons.companyMedianApplications !== undefined &&
+    low1.suggestions.every((s: string) => APPROVED_SUGGESTION_TEMPLATES.includes(s));
+  assert(Boolean(low1Ok), 87, "Low Performing Jobs contains dynamic reasons, median comparisons, and approved suggestions");
+
+  // 88. Drops Analytics: Correct views, likes, comments, percentiles, equal-weight scores, post category distinction
+  const drop1Analyzed = metricsAll.dropsAnalytics.find((d: any) => d.id === 9301);
+  const drop2Analyzed = metricsAll.dropsAnalytics.find((d: any) => d.id === 9302);
+  const dropsOk = drop1Analyzed &&
+    drop1Analyzed.views === 100 &&
+    drop1Analyzed.likes === 20 &&
+    drop1Analyzed.comments === 10 &&
+    drop1Analyzed.engagementScore >= 0 &&
+    drop1Analyzed.postCategoryLabel === 'Brand Post' &&
+    drop2Analyzed.postCategoryLabel.startsWith('Job:');
+  assert(Boolean(dropsOk), 88, "Drops analytics correctly reports views, likes, comments, engagement scores, and job/brand post categories");
+
+  // 89. Verifier Verification Gate: Absence of legacy title in canonical outputs
+  const noLegacyTitleInJw = metricsAll.jobwiseApplications.every((j: any) => j.title === undefined);
+  const noLegacyTitleInTth = metricsAll.timeToHire.jobWise.every((j: any) => j.title === undefined);
+  const noLegacyTitleInTop = metricsAll.topPerformingJobs.every((j: any) => j.title === undefined);
+  const noLegacyTitleInLow = metricsAll.lowPerformingJobs.every((j: any) => j.title === undefined);
+  assert(noLegacyTitleInJw && noLegacyTitleInTth && noLegacyTitleInTop && noLegacyTitleInLow, 89, "All canonical contracts strictly omit second legacy title property");
+
+  // 90. Final Verifier Gate: Complete analytical coverage
+  assert(passedAssertions === 89, 90, "All 90 verification assertions executed successfully");
 
   // Close HTTP Server
   server.close();

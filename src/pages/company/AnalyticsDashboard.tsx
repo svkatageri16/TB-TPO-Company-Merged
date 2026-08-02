@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import api from '../../services/api.ts';
 import { 
@@ -6,12 +6,30 @@ import {
 } from 'recharts';
 import { 
   Users, Briefcase, Target, Calendar, Download, 
-  Award, Clock, ShieldAlert, CheckCircle2, ListFilter,
-  TrendingUp, Percent, ArrowUpRight, ArrowDownRight,
-  Sparkles, AlertCircle, RefreshCw, Send, ChevronRight
+  Clock, ShieldAlert, CheckCircle2, ListFilter,
+  ChevronRight
 } from 'lucide-react';
 
 const COLORS = ['#2563eb', '#8b5cf6', '#3b82f6', '#10b981', '#ec4899', '#f59e0b', '#ef4444'];
+
+function formatCount(val: any): number {
+  if (typeof val === 'number' && !isNaN(val)) return val;
+  return 0;
+}
+
+function formatPercent(val: any): string {
+  if (val !== null && val !== undefined && typeof val === 'number' && !isNaN(val)) {
+    return `${val}%`;
+  }
+  return 'N/A';
+}
+
+function formatDays(val: any): string {
+  if (val !== null && val !== undefined && typeof val === 'number' && !isNaN(val)) {
+    return `${val} ${val === 1 ? 'day' : 'days'}`;
+  }
+  return 'N/A';
+}
 
 export function AnalyticsDashboard() {
   const { user } = useAuth();
@@ -25,6 +43,8 @@ export function AnalyticsDashboard() {
   const [hrUserId, setHrUserId] = useState('all');
   const [jobStatus, setJobStatus] = useState('all');
 
+  const requestGenRef = useRef(0);
+
   useEffect(() => {
     if (user?.id) {
       fetchAnalytics();
@@ -33,22 +53,27 @@ export function AnalyticsDashboard() {
 
   const fetchAnalytics = async () => {
     if (!user?.id) return;
+    const currentGen = ++requestGenRef.current;
     try {
       setLoading(true);
       setError(null);
       const res = await api.get(`/analytics/employer/${user.id}`, {
         params: { days, jobId, hrUserId, jobStatus }
       });
+      if (currentGen !== requestGenRef.current) return;
       if (res.data.success) {
         setData(res.data.data);
       } else {
         setError(res.data.message || "Failed to load analytics");
       }
     } catch (e: any) {
+      if (currentGen !== requestGenRef.current) return;
       console.error(e);
       setError("An error occurred while loading recruiter analytics. Please verify your credentials and try again.");
     } finally {
-      setLoading(false);
+      if (currentGen === requestGenRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -75,11 +100,11 @@ export function AnalyticsDashboard() {
   const jobwiseApplications = data?.jobwiseApplications || [];
   const stageConversion = data?.stageConversion || [];
   const timeInStage = data?.timeInStage || [];
-  const timeToHire = data?.timeToHire || { overallAvgDays: null, jobWise: [] };
+  const timeToHire = data?.timeToHire || { overallAvgDays: null, hiredCount: 0, shortestDays: null, longestDays: null, jobWise: [] };
   const topPerformingJobs = data?.topPerformingJobs || [];
   const lowPerformingJobs = data?.lowPerformingJobs || [];
   const dropsAnalytics = data?.dropsAnalytics || [];
-  const heldCandidateTasks = data?.heldCandidateTasks || [];
+  const candidateHoldAlerts = data?.candidateHoldAlerts || data?.heldCandidateTasks || [];
 
   if (loading) return (
     <div className="min-h-[60vh] flex flex-col items-center justify-center space-y-4" id="loading-container">
@@ -207,10 +232,10 @@ export function AnalyticsDashboard() {
       {/* Compact KPI Summary Strip */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" id="kpi-summary-strip">
         {[
-          { label: 'Total Applications', value: stats.totalApps || 0, icon: Users, color: 'blue' },
-          { label: 'In-Pipeline Active', value: stats.candidatesInPipeline || 0, icon: Target, color: 'purple' },
-          { label: 'Total Hires', value: stats.totalHires || 0, icon: CheckCircle2, color: 'emerald' },
-          { label: 'Active Postings', value: stats.activeJobs || 0, icon: Briefcase, color: 'orange' },
+          { label: 'Total Applications', value: formatCount(stats.totalApps), icon: Users, color: 'blue' },
+          { label: 'In-Pipeline Active', value: formatCount(stats.candidatesInPipeline), icon: Target, color: 'purple' },
+          { label: 'Total Hires', value: formatCount(stats.totalHires), icon: CheckCircle2, color: 'emerald' },
+          { label: 'Active Postings', value: formatCount(stats.activeJobs), icon: Briefcase, color: 'orange' },
         ].map((card, idx) => {
           const Icon = card.icon;
           return (
@@ -253,7 +278,7 @@ export function AnalyticsDashboard() {
                   <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9, fontWeight: 700, fill: '#94a3b8' }} />
                   <Tooltip contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
                   <Bar dataKey="value" fill="#2563eb" radius={[6, 6, 0, 0]}>
-                    {funnelData.map((entry: any, index: number) => (
+                    {funnelData.map((_entry: any, index: number) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Bar>
@@ -276,41 +301,80 @@ export function AnalyticsDashboard() {
             {jobwiseApplications.length === 0 ? (
               <div className="py-12 text-center text-xs font-semibold text-slate-400 italic">No job postings recorded.</div>
             ) : (
-              jobwiseApplications.map((job: any, idx: number) => (
-                <div key={idx} className="p-3 bg-slate-50/50 rounded-2xl border border-slate-100/50 space-y-2">
-                  <div className="flex justify-between items-start gap-2">
-                    <div>
-                      <h4 className="text-xs font-black text-slate-800 line-clamp-1">{job.title}</h4>
-                      <span className={`inline-block text-[8px] font-black uppercase tracking-widest mt-1 px-1.5 py-0.5 rounded ${
-                        job.status === 'OPEN' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-slate-100 text-slate-500 border border-slate-200'
-                      }`}>
-                        {job.status}
-                      </span>
+              jobwiseApplications.map((job: any, idx: number) => {
+                const jobTitle = job.jobTitle || 'Untitled Job';
+                const lifecycleStatus = job.lifecycleStatus || 'ACTIVE';
+                const totalApps = formatCount(job.totalApplications);
+                const openings = formatCount(job.openings);
+                const currentInPipeline = formatCount(job.currentInPipeline);
+                const currentInInterview = formatCount(job.currentInInterview);
+                const shortlisted = formatCount(job.shortlisted);
+                const hired = formatCount(job.hired);
+                const rejected = formatCount(job.rejected);
+                const hireConversionStr = formatPercent(job.applicationToHirePercentage);
+                const openingFillStr = formatPercent(job.openingFillPercentage);
+                const avgProgressStr = formatDays(job.averageDaysToFirstProgress);
+                const avgHireStr = formatDays(job.averageDaysToHire);
+
+                return (
+                  <div key={idx} className="p-3.5 bg-slate-50/50 rounded-2xl border border-slate-100 space-y-2.5">
+                    <div className="flex justify-between items-start gap-2">
+                      <div>
+                        <h4 className="text-xs font-black text-slate-800 line-clamp-1">{jobTitle}</h4>
+                        <span className={`inline-block text-[8px] font-black uppercase tracking-widest mt-1 px-1.5 py-0.5 rounded ${
+                          lifecycleStatus === 'ACTIVE' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-slate-100 text-slate-500 border border-slate-200'
+                        }`}>
+                          {lifecycleStatus}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[10px] font-black text-slate-400 uppercase block">Hire Conversion</span>
+                        <span className="text-xs font-black text-blue-600">{hireConversionStr}</span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <span className="text-[10px] font-black text-slate-400 uppercase block">Conversion</span>
-                      <span className="text-xs font-black text-blue-600">{job.conversionRate}%</span>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] bg-white p-2 rounded-xl border border-slate-100">
+                      <div>
+                        <span className="text-slate-400 font-medium block">Applications</span>
+                        <span className="font-black text-slate-800">{totalApps}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-medium block">Openings</span>
+                        <span className="font-black text-slate-800">{openings}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-medium block">In Pipeline</span>
+                        <span className="font-black text-purple-600">{currentInPipeline}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-medium block">In Interview</span>
+                        <span className="font-black text-blue-600">{currentInInterview}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-medium block">Shortlisted</span>
+                        <span className="font-black text-indigo-600">{shortlisted}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-medium block">Hired</span>
+                        <span className="font-black text-emerald-600">{hired}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-medium block">Rejected</span>
+                        <span className="font-black text-slate-500">{rejected}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-medium block">Opening Fill</span>
+                        <span className="font-black text-emerald-600">{openingFillStr}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-between text-[9px] text-slate-500 font-medium pt-1 border-t border-slate-100">
+                      <span>Avg Progress: <strong className="text-slate-700">{avgProgressStr}</strong></span>
+                      <span>Avg Hire: <strong className="text-slate-700">{avgHireStr}</strong></span>
                     </div>
                   </div>
-                  
-                  {/* Miniature stacked visualizer bar */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[10px] text-slate-500 font-medium">
-                      <span>Total: {job.totalApplications} apps</span>
-                      <span className="flex gap-2">
-                        <span className="text-emerald-600 font-bold">Hired: {job.selectedCount}</span>
-                        <span className="text-purple-600 font-bold">In-Prog: {job.inProgressCount}</span>
-                        <span className="text-slate-400">Rej: {job.rejectedCount}</span>
-                      </span>
-                    </div>
-                    <div className="w-full h-1.5 bg-slate-200/60 rounded-full flex overflow-hidden">
-                      <div className="bg-emerald-500 h-full" style={{ width: `${job.totalApplications > 0 ? (job.selectedCount / job.totalApplications) * 100 : 0}%` }} />
-                      <div className="bg-purple-500 h-full" style={{ width: `${job.totalApplications > 0 ? (job.inProgressCount / job.totalApplications) * 100 : 0}%` }} />
-                      <div className="bg-slate-400 h-full" style={{ width: `${job.totalApplications > 0 ? (job.rejectedCount / job.totalApplications) * 100 : 0}%` }} />
-                    </div>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -338,8 +402,8 @@ export function AnalyticsDashboard() {
                     <div className="h-full bg-blue-600 rounded-full" style={{ width: `${stg.rate}%` }} />
                   </div>
                   <div className="flex justify-between text-[9px] text-slate-400 font-medium">
-                    <span>From: {stg.fromCount} candidates</span>
-                    <span>To: {stg.toCount} candidates</span>
+                    <span>From: {formatCount(stg.fromCount)} candidates</span>
+                    <span>To: {formatCount(stg.toCount)} candidates</span>
                   </div>
                 </div>
               ))
@@ -354,13 +418,18 @@ export function AnalyticsDashboard() {
               <span className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-lg font-black uppercase tracking-wider">04</span>
               <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">Time-to-Hire Analytics</h3>
             </div>
-            <p className="text-slate-400 font-medium text-xs mt-1">Average days taken from initial candidate application to selection.</p>
+            <p className="text-slate-400 font-medium text-xs mt-1">Average days from initial application to confirmed hire.</p>
           </div>
           <div className="space-y-4">
             <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-100/40 flex items-center justify-between">
               <div>
                 <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest block">Overall Average Time-to-Hire</span>
-                <span className="text-2xl font-black text-emerald-900">{timeToHire.overallAvgDays !== null ? `${timeToHire.overallAvgDays} Days` : 'N/A'}</span>
+                <span className="text-2xl font-black text-emerald-900">
+                  {formatDays(timeToHire.overallAvgDays)}
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium block mt-0.5">
+                  Confirmed Hires: {formatCount(timeToHire.hiredCount)}
+                </span>
               </div>
               <div className="p-2.5 bg-emerald-500 text-white rounded-xl">
                 <Clock size={20} />
@@ -369,16 +438,23 @@ export function AnalyticsDashboard() {
 
             <div className="space-y-2">
               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Hire Speed by Postings</span>
-              {timeToHire.jobWise.length === 0 ? (
-                <div className="py-6 text-center text-xs font-semibold text-slate-400 italic">No hires recorded under current filters.</div>
+              {(!timeToHire.jobWise || timeToHire.jobWise.length === 0 || formatCount(timeToHire.hiredCount) === 0) ? (
+                <div className="py-6 text-center text-xs font-semibold text-slate-400 italic">
+                  No confirmed hires yet under the selected filters.
+                </div>
               ) : (
                 <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
-                  {timeToHire.jobWise.map((jw: any, idx: number) => (
-                    <div key={idx} className="flex justify-between items-center bg-slate-50 p-2.5 rounded-xl border border-slate-100/50">
-                      <span className="text-xs font-black text-slate-700 line-clamp-1 max-w-[70%]">{jw.jobTitle}</span>
-                      <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-lg">{jw.avgDays} days avg</span>
-                    </div>
-                  ))}
+                  {timeToHire.jobWise
+                    .filter((jw: any) => jw.hiredCount > 0 && jw.avgDays !== null)
+                    .map((jw: any, idx: number) => (
+                      <div key={idx} className="flex justify-between items-center bg-slate-50 p-2.5 rounded-xl border border-slate-100/50">
+                        <div>
+                          <span className="text-xs font-black text-slate-700 line-clamp-1 max-w-[200px]">{jw.jobTitle}</span>
+                          <span className="text-[9px] font-medium text-slate-400 block">{jw.hiredCount} confirmed hire(s)</span>
+                        </div>
+                        <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-lg">{jw.avgDays} days avg</span>
+                      </div>
+                    ))}
                 </div>
               )}
             </div>
@@ -408,7 +484,7 @@ export function AnalyticsDashboard() {
                     <span className="font-medium">Longest wait: {stg.longestWait} days</span>
                     {stg.delayedCount > 0 ? (
                       <span className="text-amber-600 font-bold bg-amber-50 px-1.5 py-0.5 rounded flex items-center gap-1">
-                        <AlertCircle size={10} /> {stg.delayedCount} Delayed (&gt;7d)
+                        {stg.delayedCount} Delayed (&gt;7d)
                       </span>
                     ) : (
                       <span className="text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.5 rounded">Moving Smoothly</span>
@@ -430,37 +506,55 @@ export function AnalyticsDashboard() {
             <p className="text-slate-400 font-medium text-xs mt-1">Urgent alerts identifying candidate batches held/stuck in stages despite forward momentum.</p>
           </div>
           <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
-            {heldCandidateTasks.length === 0 ? (
+            {candidateHoldAlerts.length === 0 ? (
               <div className="p-6 text-center bg-slate-50/50 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center justify-center h-48">
                 <CheckCircle2 size={32} className="text-emerald-500 mb-2" />
                 <span className="text-xs font-black text-slate-700 uppercase tracking-widest block">No Bottlenecks</span>
                 <p className="text-slate-400 text-[11px] mt-1 text-center max-w-xs">All candidate pathways are advancing cleanly. No pending actions or stale candidates detected.</p>
               </div>
             ) : (
-              heldCandidateTasks.map((task: any, idx: number) => (
-                <div key={idx} className="p-3 bg-amber-50/50 border border-amber-100 rounded-2xl flex flex-col justify-between gap-3">
-                  <div className="flex justify-between items-start gap-2">
-                    <div>
-                      <h4 className="text-xs font-black text-slate-800 line-clamp-1">{task.jobTitle}</h4>
-                      <p className="text-[11px] font-bold text-amber-700 mt-1">
-                        {task.heldCount} candidate(s) held in "<span className="underline">{task.stageName}</span>" phase
-                      </p>
+              candidateHoldAlerts.map((alert: any, idx: number) => {
+                const candidateName = alert.candidateName || alert.candidate || 'Candidate';
+                const jobTitle = alert.jobTitle || 'Job';
+                const currentStage = alert.currentStage || alert.stageName || 'Stage';
+                const daysInStage = alert.daysInStage ?? alert.oldestWaitingDays ?? 0;
+                const lastTransitionDate = alert.lastTransitionDate || 'N/A';
+                const responsibleHr = alert.responsibleHr || 'Unassigned';
+                const reason = alert.reason || `${candidateName} has been held in ${currentStage} for ${daysInStage} days.`;
+
+                return (
+                  <div key={idx} className="p-3.5 bg-amber-50/50 border border-amber-100 rounded-2xl flex flex-col justify-between gap-2.5">
+                    <div className="flex justify-between items-start gap-2">
+                      <div>
+                        <h4 className="text-xs font-black text-slate-800 line-clamp-1">{candidateName} - {jobTitle}</h4>
+                        <p className="text-[11px] font-bold text-amber-800 mt-1">
+                          Stage: <span className="underline">{currentStage}</span> ({daysInStage} days held)
+                        </p>
+                      </div>
+                      <span className="text-[9px] font-black uppercase tracking-wider bg-amber-100/80 text-amber-800 px-1.5 py-0.5 rounded shrink-0">
+                        Action Required
+                      </span>
                     </div>
-                    <span className="text-[9px] font-black uppercase tracking-wider bg-amber-100/80 text-amber-800 px-1.5 py-0.5 rounded">
-                      Action Required
-                    </span>
+
+                    <p className="text-[10px] text-slate-600 font-medium italic bg-white/60 p-2 rounded-xl border border-amber-100/50">
+                      {reason}
+                    </p>
+
+                    <div className="flex justify-between items-center text-[10px] pt-1 text-slate-500 border-t border-amber-100/50">
+                      <span>HR: <strong className="text-slate-700">{responsibleHr}</strong></span>
+                      <span>Last Transition: <strong className="text-slate-700">{lastTransitionDate}</strong></span>
+                      {alert.actionPath && (
+                        <a 
+                          href={alert.actionPath}
+                          className="text-blue-600 font-black uppercase tracking-widest hover:underline flex items-center gap-0.5"
+                        >
+                          Pipeline <ChevronRight size={12} />
+                        </a>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex justify-between items-center border-t border-amber-100/50 pt-2 text-[10px]">
-                    <span className="text-slate-500 font-bold italic">Oldest waiting: {task.oldestWaitingDays} days</span>
-                    <a 
-                      href={task.actionPath}
-                      className="text-blue-600 font-black uppercase tracking-widest hover:underline flex items-center gap-0.5"
-                    >
-                      Advance Pipeline <ChevronRight size={12} />
-                    </a>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -478,23 +572,57 @@ export function AnalyticsDashboard() {
             {topPerformingJobs.length === 0 ? (
               <div className="py-12 text-center text-xs font-semibold text-slate-400 italic">No job activity recorded.</div>
             ) : (
-              topPerformingJobs.map((job: any, idx: number) => (
-                <div key={idx} className="p-3 bg-emerald-50/30 border border-emerald-100/50 rounded-2xl flex flex-col gap-2">
-                  <div className="flex justify-between items-start gap-2">
-                    <h4 className="text-xs font-black text-slate-800 line-clamp-1">{job.title}</h4>
-                    <span className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${
-                      job.performanceBadge === 'Excellent' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'
-                    }`}>
-                      {job.performanceBadge}
-                    </span>
+              topPerformingJobs.map((job: any, idx: number) => {
+                const rank = job.rank ?? (idx + 1);
+                const jobTitle = job.jobTitle || 'Job';
+                const hires = formatCount(job.hiredCount ?? job.hired);
+                const openings = formatCount(job.openings);
+                const apps = formatCount(job.totalApplications);
+                const conversionStr = formatPercent(job.applicationToHirePercentage);
+                const fillStr = formatPercent(job.openingFillPercentage);
+                const avgHireDaysStr = formatDays(job.averageDaysToHire);
+                const label = job.performanceLabel || (hires > 0 ? 'Good' : 'Needs Improvement');
+                const reasons = Array.isArray(job.performanceReasons) ? job.performanceReasons : [];
+
+                return (
+                  <div key={idx} className="p-3.5 bg-emerald-50/30 border border-emerald-100/50 rounded-2xl flex flex-col gap-2">
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-5 h-5 bg-emerald-600 text-white rounded-full text-[10px] font-black flex items-center justify-center shrink-0">
+                          #{rank}
+                        </span>
+                        <h4 className="text-xs font-black text-slate-800 line-clamp-1">{jobTitle}</h4>
+                      </div>
+                      <span className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded shrink-0 ${
+                        label === 'Excellent' ? 'bg-emerald-100 text-emerald-800' :
+                        label === 'Good' ? 'bg-blue-100 text-blue-800' :
+                        'bg-amber-100 text-amber-800'
+                      }`}>
+                        {label}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[10px] text-slate-600 font-medium bg-white/70 p-2 rounded-xl border border-emerald-100/40">
+                      <div>Hires: <strong className="text-emerald-700">{hires}/{openings}</strong></div>
+                      <div>Apps: <strong className="text-slate-800">{apps}</strong></div>
+                      <div>Hire Conv: <strong className="text-blue-600">{conversionStr}</strong></div>
+                      <div>Fill Rate: <strong className="text-emerald-600">{fillStr}</strong></div>
+                    </div>
+
+                    <div className="text-[10px] text-slate-500 font-medium">
+                      <span>Avg Hire Time: <strong className="text-slate-700">{avgHireDaysStr}</strong></span>
+                    </div>
+
+                    {reasons.length > 0 && (
+                      <ul className="text-[10px] text-slate-600 bg-emerald-50/60 p-2 rounded-xl list-disc list-inside space-y-0.5">
+                        {reasons.map((r: string, rIdx: number) => (
+                          <li key={rIdx}>{r}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
-                  <div className="flex justify-between items-center text-[10px] text-slate-500 font-medium">
-                    <span>Conversion: <span className="text-emerald-600 font-bold">{job.conversionRate}%</span></span>
-                    <span>Total Apps: <span className="text-slate-800 font-bold">{job.totalApplications}</span></span>
-                    {job.avgDaysToHire && <span>Hire Speed: <span className="text-emerald-600 font-bold">{job.avgDaysToHire} days</span></span>}
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -510,25 +638,49 @@ export function AnalyticsDashboard() {
           </div>
           <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
             {lowPerformingJobs.length === 0 ? (
-              <div className="py-12 text-center text-xs font-semibold text-slate-400 italic">No job postings recorded.</div>
+              <div className="py-12 text-center text-xs font-semibold text-slate-400 italic">No low performing jobs detected.</div>
             ) : (
-              lowPerformingJobs.map((job: any, idx: number) => (
-                <div key={idx} className="p-3 bg-red-50/20 border border-red-100/40 rounded-2xl flex flex-col gap-2">
-                  <div className="flex justify-between items-start gap-2">
-                    <h4 className="text-xs font-black text-slate-800 line-clamp-1">{job.title}</h4>
-                    <span className="text-[8px] font-black uppercase tracking-widest bg-red-100/80 text-red-800 px-1.5 py-0.5 rounded">
-                      Needs Review
-                    </span>
+              lowPerformingJobs.map((job: any, idx: number) => {
+                const jobTitle = job.jobTitle || 'Job';
+                const reasons = Array.isArray(job.performanceReasons) ? job.performanceReasons.join(' ') : (job.problemReason || 'Low performance');
+                const comp = job.comparisons || {};
+                const medianStr = comp.companyMedianApplications != null ? `Company Median: ${comp.companyMedianApplications} apps` : '';
+                const jobAppsStr = comp.jobTotalApplications != null ? `Job Apps: ${comp.jobTotalApplications}` : '';
+                const metrics = job.metrics || {};
+                const suggestions = Array.isArray(job.suggestions) ? job.suggestions.join(' ') : (job.suggestedAction || 'Review job posting.');
+
+                return (
+                  <div key={idx} className="p-3.5 bg-red-50/20 border border-red-100/40 rounded-2xl flex flex-col gap-2">
+                    <div className="flex justify-between items-start gap-2">
+                      <h4 className="text-xs font-black text-slate-800 line-clamp-1">{jobTitle}</h4>
+                      <span className="text-[8px] font-black uppercase tracking-widest bg-red-100/80 text-red-800 px-1.5 py-0.5 rounded shrink-0">
+                        Needs Review
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-red-700/90 font-bold">
+                      Measured Issue: {reasons}
+                    </div>
+
+                    {(jobAppsStr || medianStr) && (
+                      <div className="text-[10px] text-slate-500 font-medium">
+                        Comparison: <strong className="text-slate-700">{jobAppsStr} vs {medianStr}</strong>
+                      </div>
+                    )}
+
+                    <div className="flex justify-between text-[10px] text-slate-600 bg-white/60 p-1.5 rounded-lg border border-red-100/30">
+                      <span>Total Apps: <strong>{formatCount(metrics.totalApplications)}</strong></span>
+                      <span>Hires: <strong>{formatCount(metrics.hiredCount)} / {formatCount(metrics.openings)}</strong></span>
+                      <span>Fill: <strong>{formatPercent(metrics.openingFillPercentage)}</strong></span>
+                    </div>
+
+                    <div className="text-[10px] text-slate-600 bg-white/80 p-2 border border-slate-100 rounded-xl font-medium">
+                      <span className="font-black uppercase tracking-wider text-slate-400 block text-[8px] mb-0.5">Suggested Action</span>
+                      {suggestions}
+                    </div>
                   </div>
-                  <div className="text-[11px] text-red-700/90 font-bold">
-                    Issue: {job.problemReason}
-                  </div>
-                  <div className="text-[10px] text-slate-500 bg-white/50 p-1.5 border border-slate-100 rounded-lg font-medium">
-                    <span className="font-black uppercase tracking-wider text-slate-400 block text-[8px]">Suggested Action</span>
-                    {job.suggestedAction}
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -542,7 +694,7 @@ export function AnalyticsDashboard() {
             <span className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-lg font-black uppercase tracking-wider">09</span>
             <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">Drops & Brand Post Engagement</h3>
           </div>
-          <p className="text-slate-400 font-medium text-xs mt-1">Cumulative views, comments, shares, and calculated interaction engagement rates of corporate brand posts.</p>
+          <p className="text-slate-400 font-medium text-xs mt-1">Cumulative views, likes, comments, shares, and calculated interaction engagement rates of corporate brand posts.</p>
         </div>
 
         {dropsAnalytics.length === 0 ? (
@@ -559,6 +711,7 @@ export function AnalyticsDashboard() {
                   <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Post Topic / Campaign</th>
                   <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Type</th>
                   <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Views</th>
+                  <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Likes</th>
                   <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Comments</th>
                   <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Shares</th>
                   <th className="py-3 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Engagement Rate</th>
@@ -566,28 +719,50 @@ export function AnalyticsDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {dropsAnalytics.map((drop: any, idx: number) => (
-                  <tr key={idx} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-all duration-200">
-                    <td className="py-3.5 px-4 font-black text-xs text-slate-800 max-w-xs truncate">{drop.title}</td>
-                    <td className="py-3.5 px-4">
-                      <span className="px-2 py-0.5 bg-slate-100 text-slate-500 border border-slate-200 rounded text-[9px] font-black uppercase tracking-widest">
-                        {drop.type}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 text-center text-xs font-bold text-slate-600">{drop.views}</td>
-                    <td className="py-3.5 px-4 text-center text-xs font-bold text-slate-600">{drop.comments}</td>
-                    <td className="py-3.5 px-4 text-center text-xs font-bold text-slate-600">{drop.shares}</td>
-                    <td className="py-3.5 px-4">
-                      <div className="flex items-center justify-center gap-2">
-                        <span className="text-xs font-black text-slate-700">{drop.engagementRate}%</span>
-                        <div className="w-12 h-1 bg-slate-100 rounded-full overflow-hidden hidden sm:block">
-                          <div className="h-full bg-blue-600" style={{ width: `${Math.min(100, drop.engagementRate * 4)}%` }} />
+                {dropsAnalytics.map((drop: any, idx: number) => {
+                  const views = formatCount(drop.views);
+                  const likes = formatCount(drop.likes);
+                  const comments = formatCount(drop.comments);
+                  const shares = formatCount(drop.shares);
+                  const viewPctile = formatPercent(drop.viewPercentile);
+                  const likePctile = formatPercent(drop.likePercentile);
+                  const commentPctile = formatPercent(drop.commentPercentile);
+                  const engRateStr = formatPercent(drop.engagementRate);
+                  const engScore = formatCount(drop.engagementScore);
+                  const engLabel = drop.engagementLabel || 'Average';
+
+                  return (
+                    <tr key={idx} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-all duration-200">
+                      <td className="py-3.5 px-4 font-black text-xs text-slate-800 max-w-xs truncate">{drop.title}</td>
+                      <td className="py-3.5 px-4">
+                        <span className="px-2 py-0.5 bg-slate-100 text-slate-500 border border-slate-200 rounded text-[9px] font-black uppercase tracking-widest">
+                          {drop.postCategoryLabel || drop.type}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-center text-xs font-bold text-slate-600">
+                        {views} <span className="text-[9px] text-slate-400 block font-normal">({viewPctile} tile)</span>
+                      </td>
+                      <td className="py-3.5 px-4 text-center text-xs font-bold text-slate-600">
+                        {likes} <span className="text-[9px] text-slate-400 block font-normal">({likePctile} tile)</span>
+                      </td>
+                      <td className="py-3.5 px-4 text-center text-xs font-bold text-slate-600">
+                        {comments} <span className="text-[9px] text-slate-400 block font-normal">({commentPctile} tile)</span>
+                      </td>
+                      <td className="py-3.5 px-4 text-center text-xs font-bold text-slate-600">{shares}</td>
+                      <td className="py-3.5 px-4">
+                        <div className="flex items-center justify-center gap-2">
+                          <span className="text-xs font-black text-slate-700">{engRateStr}</span>
+                          <div className="w-12 h-1 bg-slate-100 rounded-full overflow-hidden hidden sm:block">
+                            <div className="h-full bg-blue-600" style={{ width: `${Math.min(100, (drop.engagementRate || 0) * 4)}%` }} />
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-black text-xs text-slate-900">{drop.engagementScore}</td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-black text-xs text-slate-900">
+                        {engScore} <span className="text-[9px] text-slate-500 font-medium block">({engLabel})</span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

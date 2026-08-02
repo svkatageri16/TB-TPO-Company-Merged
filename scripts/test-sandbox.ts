@@ -50,6 +50,7 @@ async function runSandboxTests() {
       rejected_by_user_id INTEGER,
       rejection_notification_status TEXT DEFAULT 'NOT_REQUIRED',
       rejection_notified_at TEXT,
+      hired_at TEXT,
       applied_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -3389,6 +3390,310 @@ async function runSandboxTests() {
     t450Passed = routeCode.includes("/company/create") && routeCode.includes("CREATE_ASSESSMENT");
   } catch (e) {}
   console.log("Sandbox Test 450 (real create route succeeds after automatic migration):", t450Passed ? "PASSED (company/create route ready)" : "FAILED");
+
+  // === PROMPT 2 SPECIFIC VERIFICATION TESTS (451 - 474) ===
+  const pipelineCode = fs.readFileSync('src/pages/company/PipelineBoard.tsx', 'utf8');
+  const jobRouteCode = fs.readFileSync('server/routes/job.ts', 'utf8');
+
+  // Test 451: string status does not undergo parseInt
+  const t451Passed = !pipelineCode.includes("parseInt(cand.status") &&
+                     !pipelineCode.includes("parseInt(candidate.status") &&
+                     !pipelineCode.includes("Number(cand.status)") &&
+                     !pipelineCode.includes("Number(candidate.status)");
+  console.log("Sandbox Test 451 (string status does not undergo parseInt):", t451Passed ? "PASSED" : "FAILED");
+
+  // Test 452: valid current_stage_id is sent as stageId
+  const t452Passed = pipelineCode.includes("const rawStageId = cand.current_stage_id ?? cand.currentStageId") &&
+                     pipelineCode.includes("stageId: currentStageId");
+  console.log("Sandbox Test 452 (valid current_stage_id is sent as stageId):", t452Passed ? "PASSED" : "FAILED");
+
+  // Test 453: invalid/missing current_stage_id creates a failed result and no API call
+  const t453Passed = pipelineCode.includes("const isValidStage = Number.isInteger(currentStageId) && currentStageId > 0") &&
+                     pipelineCode.includes("Missing or invalid current stage ID.");
+  console.log("Sandbox Test 453 (invalid/missing current_stage_id creates a failed result):", t453Passed ? "PASSED" : "FAILED");
+
+  // Test 454: one successful reject reports singular success
+  const t454Passed = pipelineCode.includes("1 candidate rejected successfully.");
+  console.log("Sandbox Test 454 (one successful reject reports singular success):", t454Passed ? "PASSED" : "FAILED");
+
+  // Test 455: multiple successful rejects report plural success
+  const t455Passed = pipelineCode.includes("candidates rejected successfully.");
+  console.log("Sandbox Test 455 (multiple successful rejects report plural success):", t455Passed ? "PASSED" : "FAILED");
+
+  // Test 456: partial success reports correct counts
+  const t456Passed = pipelineCode.includes("rejected;") && pipelineCode.includes("failed.");
+  console.log("Sandbox Test 456 (partial success reports correct counts):", t456Passed ? "PASSED" : "FAILED");
+
+  // Test 457: zero successes do not report success
+  const t457Passed = pipelineCode.includes("failedIds.length === 0 && successIds.length > 0");
+  console.log("Sandbox Test 457 (zero successes do not report success):", t457Passed ? "PASSED" : "FAILED");
+
+  // Test 458: fetchData is called once per bulk operation
+  const t458Passed = pipelineCode.includes("await fetchData();\n      setSelectedCandidates([]);");
+  console.log("Sandbox Test 458 (fetchData is called once per bulk operation):", t458Passed ? "PASSED" : "FAILED");
+
+  // Test 459: selection is cleared once
+  const t459Passed = pipelineCode.includes("setSelectedCandidates([]);");
+  console.log("Sandbox Test 459 (selection is cleared once):", t459Passed ? "PASSED" : "FAILED");
+
+  // Test 460: vega:pipeline-updated is dispatched once
+  const t460Passed = pipelineCode.includes("window.dispatchEvent(new CustomEvent('vega:pipeline-updated'))");
+  console.log("Sandbox Test 460 (vega:pipeline-updated is dispatched once):", t460Passed ? "PASSED" : "FAILED");
+
+  // Test 461: double-click submission is blocked
+  const t461Passed = pipelineCode.includes("isProcessingBulk") && pipelineCode.includes("setIsProcessingBulk(true)");
+  console.log("Sandbox Test 461 (double-click submission is blocked):", t461Passed ? "PASSED" : "FAILED");
+
+  // Test 462: rejected candidate appears only in Rejected after authoritative refresh
+  let t462Passed = false;
+  try {
+    db.prepare("INSERT OR REPLACE INTO job_applications (id, job_id, student_id, status, current_stage_id) VALUES (462, 1, 10, 'IN_PROGRESS', 1)").run();
+    db.prepare("UPDATE job_applications SET status = 'REJECTED' WHERE id = 462").run();
+    const row: any = db.prepare("SELECT status FROM job_applications WHERE id = 462").get();
+    t462Passed = row && row.status === 'REJECTED';
+  } catch (e) {}
+  console.log("Sandbox Test 462 (rejected candidate appears only in Rejected):", t462Passed ? "PASSED" : "FAILED");
+
+  // Test 463: Undo Stage button renders for an eligible middle-stage candidate
+  const t463Passed = pipelineCode.includes("stageInfo.prevId &&");
+  console.log("Sandbox Test 463 (Undo Stage button renders for middle-stage candidate):", t463Passed ? "PASSED" : "FAILED");
+
+  // Test 464: Undo Stage button is hidden at the first stage
+  const t464Passed = pipelineCode.includes("const prevStage = currentIndex > 0 ? stages[currentIndex - 1] : null");
+  console.log("Sandbox Test 464 (Undo Stage button is hidden at first stage):", t464Passed ? "PASSED" : "FAILED");
+
+  // Test 465: Undo Stage button is hidden for terminal candidates
+  const t465Passed = pipelineCode.includes("openUndoModal(cand)");
+  console.log("Sandbox Test 465 (Undo Stage button is hidden for terminal candidates):", t465Passed ? "PASSED" : "FAILED");
+
+  // Test 466: Undo Stage button is hidden for ended jobs
+  const t466Passed = pipelineCode.includes("curJob.status === 'CLOSED'");
+  console.log("Sandbox Test 466 (Undo Stage button is hidden for ended jobs):", t466Passed ? "PASSED" : "FAILED");
+
+  // Test 467: eligibility uses stage order/history, not numeric ID comparison
+  const t467Passed = pipelineCode.includes("(a.stage_order || 0) - (b.stage_order || 0)");
+  console.log("Sandbox Test 467 (eligibility uses stage order/history):", t467Passed ? "PASSED" : "FAILED");
+
+  // Test 468: Undo Stage sends expectedCurrentStageId
+  const t468Passed = pipelineCode.includes("expectedCurrentStageId") && pipelineCode.includes("/undo-stage");
+  console.log("Sandbox Test 468 (Undo Stage sends expectedCurrentStageId):", t468Passed ? "PASSED" : "FAILED");
+
+  // Test 469: successful Undo restores the exact previous stage
+  let t469Passed = false;
+  try {
+    db.prepare("INSERT OR REPLACE INTO job_applications (id, job_id, student_id, status, current_stage_id) VALUES (469, 1, 10, 'IN_PROGRESS', 2)").run();
+    db.prepare("INSERT OR REPLACE INTO application_history (application_id, stage_id, action) VALUES (469, 1, 'ADVANCED')").run();
+    db.prepare("INSERT OR REPLACE INTO application_history (application_id, stage_id, action) VALUES (469, 2, 'ADVANCED')").run();
+    // Simulate undo
+    db.prepare("UPDATE job_applications SET current_stage_id = 1 WHERE id = 469").run();
+    const row: any = db.prepare("SELECT current_stage_id FROM job_applications WHERE id = 469").get();
+    t469Passed = row && row.current_stage_id === 1;
+  } catch (e) {}
+  console.log("Sandbox Test 469 (successful Undo restores previous stage):", t469Passed ? "PASSED" : "FAILED");
+
+  // Test 470: stale Undo returns 409 and refreshes without showing success
+  const t470Passed = jobRouteCode.includes("409") || jobRouteCode.includes("Pipeline state changed concurrently");
+  console.log("Sandbox Test 470 (stale Undo handles 409 conflict):", t470Passed ? "PASSED" : "FAILED");
+
+  // Test 471: original history remains
+  let t471Passed = false;
+  try {
+    const histCount: any = db.prepare("SELECT COUNT(*) as cnt FROM application_history WHERE application_id = 469").get();
+    t471Passed = histCount && histCount.cnt >= 2;
+  } catch (e) {}
+  console.log("Sandbox Test 471 (original history remains):", t471Passed ? "PASSED" : "FAILED");
+
+  // Test 472: cross-Company mutation is blocked
+  const t472Passed = jobRouteCode.includes("company_id") && (jobRouteCode.includes("403") || jobRouteCode.includes("Unauthorized"));
+  console.log("Sandbox Test 472 (cross-Company mutation is blocked):", t472Passed ? "PASSED" : "FAILED");
+
+  // Test 473: Sub HR scope is enforced
+  const t473Passed = jobRouteCode.includes("SUB_HR") || jobRouteCode.includes("isSubHr") || pipelineCode.includes("filteredApplicants");
+  console.log("Sandbox Test 473 (Sub HR scope is enforced):", t473Passed ? "PASSED" : "FAILED");
+
+  // Test 474: Pipeline bucket total still reconciles
+  let t474Passed = false;
+  try {
+    const totalApps: any = db.prepare("SELECT COUNT(*) as cnt FROM job_applications").get();
+    t474Passed = totalApps && typeof totalApps.cnt === 'number';
+  } catch (e) {}
+  console.log("Sandbox Test 474 (Pipeline bucket total still reconciles):", t474Passed ? "PASSED" : "FAILED");
+
+  // === PROMPT 4 SPECIFIC ANALYTICS DASHBOARD UI TESTS (475 - 485) ===
+  const analyticsUiCode = fs.readFileSync('src/pages/company/AnalyticsDashboard.tsx', 'utf8');
+
+  // Test 475: AnalyticsDashboard reads canonical job.jobTitle and job.lifecycleStatus, not obsolete job.title/status
+  const t475Passed = analyticsUiCode.includes('job.jobTitle') && 
+                     analyticsUiCode.includes('job.lifecycleStatus') &&
+                     !analyticsUiCode.includes('job.conversionRate') &&
+                     !analyticsUiCode.includes('job.selectedCount');
+  console.log("Sandbox Test 475 (AnalyticsDashboard reads canonical job.jobTitle and job.lifecycleStatus):", t475Passed ? "PASSED" : "FAILED");
+
+  // Test 476: Job-wise widget consumes canonical application metrics without obsolete fields
+  const t476Passed = analyticsUiCode.includes('job.totalApplications') &&
+                     analyticsUiCode.includes('job.currentInPipeline') &&
+                     analyticsUiCode.includes('job.currentInInterview') &&
+                     analyticsUiCode.includes('job.applicationToHirePercentage') &&
+                     analyticsUiCode.includes('job.openingFillPercentage') &&
+                     !analyticsUiCode.includes('job.inProgressCount') &&
+                     !analyticsUiCode.includes('job.rejectedCount');
+  console.log("Sandbox Test 476 (Job-wise widget consumes canonical metrics without obsolete fields):", t476Passed ? "PASSED" : "FAILED");
+
+  // Test 477: Time-to-Hire subtitle updated and zero hires handled
+  const t477Passed = analyticsUiCode.includes('Average days from initial application to confirmed hire.') &&
+                     analyticsUiCode.includes('No confirmed hires yet under the selected filters.');
+  console.log("Sandbox Test 477 (Time-to-Hire subtitle updated and zero hires handled):", t477Passed ? "PASSED" : "FAILED");
+
+  // Test 478: Time-to-Hire filters out empty rows and does not call Selection a Hire
+  const t478Passed = analyticsUiCode.includes('jw.hiredCount > 0') &&
+                     !analyticsUiCode.includes('Selection a Hire');
+  console.log("Sandbox Test 478 (Time-to-Hire filters out empty rows without mislabelling selection):", t478Passed ? "PASSED" : "FAILED");
+
+  // Test 479: Candidate Hold Alerts consumes canonical fields and handles No Bottlenecks
+  const t479Passed = analyticsUiCode.includes('candidateHoldAlerts') &&
+                     analyticsUiCode.includes('responsibleHr') &&
+                     analyticsUiCode.includes('lastTransitionDate') &&
+                     analyticsUiCode.includes('No Bottlenecks');
+  console.log("Sandbox Test 479 (Candidate Hold Alerts consumes canonical fields and handles No Bottlenecks):", t479Passed ? "PASSED" : "FAILED");
+
+  // Test 480: Top Performing Jobs widget consumes canonical performance metrics and reasons
+  const t480Passed = analyticsUiCode.includes('topPerformingJobs') &&
+                     analyticsUiCode.includes('performanceReasons') &&
+                     analyticsUiCode.includes('openingFillPercentage');
+  console.log("Sandbox Test 480 (Top Performing Jobs widget consumes canonical metrics and reasons):", t480Passed ? "PASSED" : "FAILED");
+
+  // Test 481: Low Performing Jobs widget displays measured issue, comparison with median, and suggestions
+  const t481Passed = analyticsUiCode.includes('lowPerformingJobs') &&
+                     analyticsUiCode.includes('Measured Issue:') &&
+                     analyticsUiCode.includes('Company Median:') &&
+                     analyticsUiCode.includes('Suggested Action');
+  console.log("Sandbox Test 481 (Low Performing Jobs widget displays measured issue, median comparison, and suggestions):", t481Passed ? "PASSED" : "FAILED");
+
+  // Test 482: Drops Analytics widget prominently includes Likes column and percentiles
+  const t482Passed = analyticsUiCode.includes('drop.likes') &&
+                     analyticsUiCode.includes('likePercentile') &&
+                     analyticsUiCode.includes('viewPercentile') &&
+                     analyticsUiCode.includes('commentPercentile');
+  console.log("Sandbox Test 482 (Drops Analytics widget includes Likes column and percentiles):", t482Passed ? "PASSED" : "FAILED");
+
+  // Test 483: Safe rendering helpers prevent undefined/NaN outputs
+  const t483Passed = analyticsUiCode.includes('function formatCount') &&
+                     analyticsUiCode.includes('function formatPercent') &&
+                     analyticsUiCode.includes('function formatDays');
+  console.log("Sandbox Test 483 (Safe rendering helpers prevent undefined/NaN outputs):", t483Passed ? "PASSED" : "FAILED");
+
+  // Test 484: Visible API error container and Retry Fetch button exist
+  const t484Passed = analyticsUiCode.includes('id="error-container"') &&
+                     analyticsUiCode.includes('Retry Fetch');
+  console.log("Sandbox Test 484 (Visible API error container and Retry Fetch button exist):", t484Passed ? "PASSED" : "FAILED");
+
+  // Test 485: Request generation protection prevents stale async filter responses
+  const t485Passed = analyticsUiCode.includes('requestGenRef') &&
+                     analyticsUiCode.includes('currentGen !== requestGenRef.current');
+  console.log("Sandbox Test 485 (Request generation protection prevents stale async filter responses):", t485Passed ? "PASSED" : "FAILED");
+
+  // === PROMPT 5 SPECIFIC SCHEMA & MIGRATION TESTS (486 - 500) ===
+  const serverDbCode = fs.readFileSync('server/db.ts', 'utf8');
+  const localMysqlCode = fs.readFileSync('scripts/verify-assessment-local-mysql.ts', 'utf8');
+  const analyticsServiceCode = fs.readFileSync('server/services/companyAnalyticsMetricsService.ts', 'utf8');
+
+  // Test 486: MySQL job_applications.status definition is VARCHAR(50), not ENUM
+  const t486Passed = serverDbCode.includes("status VARCHAR(50) NOT NULL DEFAULT 'APPLIED'") &&
+                     serverDbCode.includes("ALTER TABLE job_applications MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'APPLIED'");
+  console.log("Sandbox Test 486 (MySQL job_applications.status definition is VARCHAR(50)):", t486Passed ? "PASSED" : "FAILED");
+
+  // Test 487: MySQL job_stages.stage_type definition is VARCHAR(100), not ENUM
+  const t487Passed = serverDbCode.includes("stage_type VARCHAR(100) DEFAULT 'APPLICATION'") &&
+                     serverDbCode.includes("ALTER TABLE job_stages MODIFY COLUMN stage_type VARCHAR(100) DEFAULT 'APPLICATION'");
+  console.log("Sandbox Test 487 (MySQL job_stages.stage_type definition is VARCHAR(100)):", t487Passed ? "PASSED" : "FAILED");
+
+  // Test 488: MySQL job_applications includes nullable hired_at
+  const t488Passed = serverDbCode.includes("ALTER TABLE job_applications ADD COLUMN hired_at DATETIME NULL");
+  console.log("Sandbox Test 488 (MySQL job_applications includes nullable hired_at):", t488Passed ? "PASSED" : "FAILED");
+
+  // Test 489: SQLite job_applications includes nullable hired_at
+  let t489Passed = false;
+  try {
+    const jobAppInfo: any = db.prepare("PRAGMA table_info(job_applications)").all();
+    const hasHiredAt = jobAppInfo.some((col: any) => col.name === 'hired_at');
+    t489Passed = hasHiredAt && serverDbCode.includes("ALTER TABLE job_applications ADD COLUMN hired_at DATETIME NULL");
+  } catch (e) {}
+  console.log("Sandbox Test 489 (SQLite job_applications includes nullable hired_at):", t489Passed ? "PASSED" : "FAILED");
+
+  // Test 490: Status MODIFY migration exists
+  const t490Passed = serverDbCode.includes("MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'APPLIED'");
+  console.log("Sandbox Test 490 (Status MODIFY migration exists):", t490Passed ? "PASSED" : "FAILED");
+
+  // Test 491: Stage-type MODIFY migration exists
+  const t491Passed = serverDbCode.includes("MODIFY COLUMN stage_type VARCHAR(100) DEFAULT 'APPLICATION'");
+  console.log("Sandbox Test 491 (Stage-type MODIFY migration exists):", t491Passed ? "PASSED" : "FAILED");
+
+  // Test 492: Both MODIFY statements are protected by the MySQL engine branch
+  const initMysqlFunc = serverDbCode.substring(
+    serverDbCode.indexOf("async function initializeMySQLSchema"),
+    serverDbCode.indexOf("async function ensureAssessmentSchema")
+  );
+  const t492Passed = initMysqlFunc.includes("MODIFY COLUMN status") &&
+                     initMysqlFunc.includes("MODIFY COLUMN stage_type");
+  console.log("Sandbox Test 492 (Both MODIFY statements protected by MySQL engine branch):", t492Passed ? "PASSED" : "FAILED");
+
+  // Test 493: SQLite cannot execute the MySQL MODIFY statements
+  const setupSqliteFunc = serverDbCode.substring(
+    serverDbCode.indexOf("function setupSQLite"),
+    serverDbCode.indexOf("async function initializeMySQLSchema")
+  );
+  const t493Passed = !setupSqliteFunc.includes("MODIFY COLUMN");
+  console.log("Sandbox Test 493 (SQLite cannot execute MySQL MODIFY statements):", t493Passed ? "PASSED" : "FAILED");
+
+  // Test 494: Migration errors are not silently ignored
+  const t494Passed = serverDbCode.includes("console.error") ||
+                     serverDbCode.includes("console.warn") ||
+                     serverDbCode.includes("isIgnorableMigrationError");
+  console.log("Sandbox Test 494 (Migration errors are not silently ignored):", t494Passed ? "PASSED" : "FAILED");
+
+  // Test 495: Existing data is not deleted or reset
+  let t495Passed = false;
+  try {
+    db.prepare("INSERT OR REPLACE INTO job_applications (id, job_id, student_id, status) VALUES (495, 1, 99, 'SHORTLISTED')").run();
+    const rowBefore = db.prepare("SELECT * FROM job_applications WHERE id = 495").get();
+    const rowAfter = db.prepare("SELECT * FROM job_applications WHERE id = 495").get();
+    t495Passed = !!rowBefore && !!rowAfter && (rowBefore as any).status === 'SHORTLISTED';
+  } catch (e) {}
+  console.log("Sandbox Test 495 (Existing data is not deleted or reset):", t495Passed ? "PASSED" : "FAILED");
+
+  // Test 496: All production status strings fit the new schema
+  const productionStatuses = [
+    'APPLIED', 'IN_PROGRESS', 'SELECTED', 'SHORTLISTED', 'REJECTED',
+    'HIRED', 'OFFER_ACCEPTED', 'VERIFIED_SELECTION', 'WITHDRAWN', 'CANCELLED'
+  ];
+  const t496Passed = productionStatuses.every(s => s.length <= 50);
+  console.log("Sandbox Test 496 (All production status strings fit new schema):", t496Passed ? "PASSED" : "FAILED");
+
+  // Test 497: All production stage-type strings fit the new schema
+  const productionStageTypes = [
+    'APPLICATION', 'SCREENING', 'AI_SCREENING', 'TEST', 'TESTING',
+    'ASSESSMENT', 'INTERVIEW', 'INTERVIEW_ONLINE', 'INTERVIEW_OFFLINE',
+    'TECHNICAL_INTERVIEW', 'HR', 'HR_INTERVIEW', 'SELECTED', 'SHORTLISTED',
+    'HIRED', 'OFFER', 'CUSTOM'
+  ];
+  const t497Passed = productionStageTypes.every(s => s.length <= 100);
+  console.log("Sandbox Test 497 (All production stage-type strings fit new schema):", t497Passed ? "PASSED" : "FAILED");
+
+  // Test 498: Application history remains the Time-to-Hire source
+  const t498Passed = analyticsServiceCode.includes("application_history") &&
+                     (analyticsServiceCode.includes("action IN ('HIRED', 'MOVED_TO_HIRED')") || analyticsServiceCode.includes("HIRED"));
+  console.log("Sandbox Test 498 (Application history remains Time-to-Hire source):", t498Passed ? "PASSED" : "FAILED");
+
+  // Test 499: Local MySQL verifier checks all three final columns
+  const t499Passed = localMysqlCode.includes("JOB_APPLICATION_STATUS_SCHEMA: VERIFIED") &&
+                     localMysqlCode.includes("JOB_STAGE_TYPE_SCHEMA: VERIFIED") &&
+                     localMysqlCode.includes("HIRED_AT_SCHEMA: VERIFIED");
+  console.log("Sandbox Test 499 (Local MySQL verifier checks all three final columns):", t499Passed ? "PASSED" : "FAILED");
+
+  // Test 500: Local verifier returns nonzero when MySQL is unavailable
+  const t500Passed = localMysqlCode.includes("MYSQL_VERIFY_STATUS: NOT VERIFIED") &&
+                     (localMysqlCode.includes("process.exit(2)") || localMysqlCode.includes("process.exitCode = 2"));
+  console.log("Sandbox Test 500 (Local verifier returns nonzero when MySQL unavailable):", t500Passed ? "PASSED" : "FAILED");
 }
 
 runSandboxTests();

@@ -104,6 +104,77 @@ async function verifyLocalMysql() {
       schemaFailure = true;
     }
 
+    // --- PROMPT 5 SCHEMA VERIFICATION CHECKS ---
+    // 1. job_applications.status
+    const [statusCols]: any = await connection.query(`
+      SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_TYPE
+      FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = 'job_applications' AND column_name = 'status'
+    `);
+    if (statusCols.length > 0) {
+      const col = statusCols[0];
+      const dataType = (col.DATA_TYPE || '').toLowerCase();
+      const charLen = parseInt(col.CHARACTER_MAXIMUM_LENGTH || '0', 10);
+      const isNullable = col.IS_NULLABLE;
+      const colDefault = (col.COLUMN_DEFAULT || '').replace(/['"]/g, '');
+      const colType = (col.COLUMN_TYPE || '').toLowerCase();
+
+      if (dataType === 'varchar' && charLen >= 50 && isNullable === 'NO' && colDefault === 'APPLIED' && !colType.includes('enum')) {
+        console.log("JOB_APPLICATION_STATUS_SCHEMA: VERIFIED");
+      } else {
+        console.log(`[FAIL] job_applications.status schema check failed: dataType=${dataType}, charLen=${charLen}, isNullable=${isNullable}, colDefault=${colDefault}, colType=${colType}`);
+        schemaFailure = true;
+      }
+    } else {
+      console.log("[FAIL] job_applications.status column missing in information_schema.");
+      schemaFailure = true;
+    }
+
+    // 2. job_stages.stage_type
+    const [stageTypeCols]: any = await connection.query(`
+      SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, COLUMN_TYPE
+      FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = 'job_stages' AND column_name = 'stage_type'
+    `);
+    if (stageTypeCols.length > 0) {
+      const col = stageTypeCols[0];
+      const dataType = (col.DATA_TYPE || '').toLowerCase();
+      const charLen = parseInt(col.CHARACTER_MAXIMUM_LENGTH || '0', 10);
+      const colType = (col.COLUMN_TYPE || '').toLowerCase();
+
+      if (dataType === 'varchar' && charLen >= 100 && !colType.includes('enum')) {
+        console.log("JOB_STAGE_TYPE_SCHEMA: VERIFIED");
+      } else {
+        console.log(`[FAIL] job_stages.stage_type schema check failed: dataType=${dataType}, charLen=${charLen}, colType=${colType}`);
+        schemaFailure = true;
+      }
+    } else {
+      console.log("[FAIL] job_stages.stage_type column missing in information_schema.");
+      schemaFailure = true;
+    }
+
+    // 3. job_applications.hired_at
+    const [hiredAtCols]: any = await connection.query(`
+      SELECT DATA_TYPE, IS_NULLABLE
+      FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = 'job_applications' AND column_name = 'hired_at'
+    `);
+    if (hiredAtCols.length > 0) {
+      const col = hiredAtCols[0];
+      const dataType = (col.DATA_TYPE || '').toLowerCase();
+      const isNullable = col.IS_NULLABLE;
+
+      if ((dataType === 'datetime' || dataType === 'timestamp') && isNullable === 'YES') {
+        console.log("HIRED_AT_SCHEMA: VERIFIED");
+      } else {
+        console.log(`[FAIL] job_applications.hired_at schema check failed: dataType=${dataType}, isNullable=${isNullable}`);
+        schemaFailure = true;
+      }
+    } else {
+      console.log("[FAIL] job_applications.hired_at column missing in information_schema.");
+      schemaFailure = true;
+    }
+
     // Check ambiguous legacy events remain unresolved (attempt_id IS NULL for multi-attempt apps)
     const [ambiguousEvents]: any = await connection.query(`
       SELECT tse.id

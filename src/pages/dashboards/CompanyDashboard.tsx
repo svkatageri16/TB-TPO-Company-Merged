@@ -145,7 +145,13 @@ export function CompanyDashboard() {
   const [jobsCardFilter, setJobsCardFilter] = useState<'active' | 'ended' | 'all'>('active');
   const [applicantsCardFilter, setApplicantsCardFilter] = useState<'active' | 'ended' | 'all'>('all');
   const [pipelineCardFilter, setPipelineCardFilter] = useState<'active' | 'ended' | 'all'>('active');
+  const [interviewCardFilter, setInterviewCardFilter] = useState<'active' | 'ended' | 'all'>('active');
   const [hiredFilter, setHiredFilter] = useState<'this_month' | 'last_3_months' | 'last_6_months' | 'one_year'>('this_month');
+
+  const [scopeMetrics, setScopeMetrics] = useState<any>(null);
+  const [hiredByPeriod, setHiredByPeriod] = useState<any>(null);
+  const [pendingActionsList, setPendingActionsList] = useState<any[]>([]);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
 
   const [realJobs, setRealJobs] = useState<any[]>([]);
   const [realApplicants, setRealApplicants] = useState<any[]>([]);
@@ -155,86 +161,44 @@ export function CompanyDashboard() {
   const [pipelineStepCounts, setPipelineStepCounts] = useState<any[]>([]);
 
   const hiredCountFiltered = useMemo(() => {
-    const now = new Date();
-    return realApplicants.filter((a: any) => {
-      const bucket = normalizeStageBucket(a);
-      const statusUpper = (a.status || '').toUpperCase();
-      const isHired = (
-        bucket === 'HIRED' ||
-        statusUpper === 'SELECTED' ||
-        statusUpper === 'HIRED' ||
-        statusUpper === 'VERIFIED_SELECTION' ||
-        statusUpper === 'OFFER_ACCEPTED' ||
-        statusUpper === 'SHORTLISTED'
-      );
-      if (!isHired) return false;
-
-      const targetDateStr = a.hired_at || a.applied_at;
-      if (!targetDateStr) return false;
-      let formattedDateStr = targetDateStr;
-      if (typeof formattedDateStr === 'string' && !formattedDateStr.includes('T') && !formattedDateStr.includes('Z')) {
-        formattedDateStr = formattedDateStr.replace(' ', 'T');
-      }
-      const resDate = new Date(formattedDateStr);
-      if (isNaN(resDate.getTime())) return true;
-      
-      const diffMs = now.getTime() - resDate.getTime();
-      const diffDays = diffMs / (1000 * 60 * 60 * 24);
-      
-      if (hiredFilter === 'this_month') {
-        return resDate.getMonth() === now.getMonth() && resDate.getFullYear() === now.getFullYear();
-      } else if (hiredFilter === 'last_3_months') {
-        return diffDays <= 90;
-      } else if (hiredFilter === 'last_6_months') {
-        return diffDays <= 180;
-      } else if (hiredFilter === 'one_year') {
-        return diffDays <= 365;
-      } else {
-        return true;
-      }
-    }).length;
-  }, [realApplicants, hiredFilter]);
+    if (hiredByPeriod) {
+      if (hiredFilter === 'this_month') return hiredByPeriod.thisMonth;
+      if (hiredFilter === 'last_3_months') return hiredByPeriod.last3Months;
+      if (hiredFilter === 'last_6_months') return hiredByPeriod.last6Months;
+      if (hiredFilter === 'one_year') return hiredByPeriod.oneYear;
+    }
+    return realApplicants.filter((a: any) => String(a.raw_status || a.status).toUpperCase() === 'HIRED').length;
+  }, [hiredByPeriod, hiredFilter, realApplicants]);
 
   const displayedJobsCount = useMemo(() => {
-    if (jobsCardFilter === 'active') {
-      return realJobs.filter(isJobActive).length;
-    } else if (jobsCardFilter === 'ended') {
-      return realJobs.filter(isJobEnded).length;
+    if (scopeMetrics && scopeMetrics[jobsCardFilter]) {
+      return scopeMetrics[jobsCardFilter].totalJobs;
     }
+    if (jobsCardFilter === 'active') return realJobs.filter(isJobActive).length;
+    if (jobsCardFilter === 'ended') return realJobs.filter(isJobEnded).length;
     return realJobs.filter(j => isJobActive(j) || isJobEnded(j)).length;
-  }, [realJobs, jobsCardFilter, isJobActive, isJobEnded]);
+  }, [scopeMetrics, jobsCardFilter, realJobs, isJobActive, isJobEnded]);
 
   const displayedApplicantsCount = useMemo(() => {
-    return realApplicants.filter((a: any) => {
-      const job = realJobs.find((j: any) => j.id === a.job_id);
-      if (!job) return false;
-      const active = isJobActive(job);
-      const ended = isJobEnded(job);
-      if (applicantsCardFilter === 'active') {
-        return active;
-      } else if (applicantsCardFilter === 'ended') {
-        return ended;
-      }
-      return active || ended;
-    }).length;
-  }, [realApplicants, realJobs, applicantsCardFilter, isJobActive, isJobEnded]);
+    if (scopeMetrics && scopeMetrics[applicantsCardFilter]) {
+      return scopeMetrics[applicantsCardFilter].totalApplicants;
+    }
+    return realApplicants.length;
+  }, [scopeMetrics, applicantsCardFilter, realApplicants]);
 
   const displayedPipelineCount = useMemo(() => {
-    return realApplicants.filter((a: any) => {
-      if (!isAppInPipeline(a)) return false;
+    if (scopeMetrics && scopeMetrics[pipelineCardFilter]) {
+      return scopeMetrics[pipelineCardFilter].inPipeline;
+    }
+    return 0;
+  }, [scopeMetrics, pipelineCardFilter]);
 
-      const job = realJobs.find((j: any) => j.id === a.job_id);
-      if (!job) return false;
-      const active = isJobActive(job);
-      const ended = isJobEnded(job);
-      if (pipelineCardFilter === 'active') {
-        return active;
-      } else if (pipelineCardFilter === 'ended') {
-        return ended;
-      }
-      return active || ended;
-    }).length;
-  }, [realApplicants, realJobs, pipelineCardFilter, isAppInPipeline, isJobActive, isJobEnded]);
+  const displayedInInterviewCount = useMemo(() => {
+    if (scopeMetrics && scopeMetrics[interviewCardFilter]) {
+      return scopeMetrics[interviewCardFilter].inInterview;
+    }
+    return 0;
+  }, [scopeMetrics, interviewCardFilter]);
 
   const applicantsThisWeekCount = useMemo(() => {
     const now = new Date();
@@ -465,14 +429,15 @@ export function CompanyDashboard() {
         let analyticsRes: any = null;
         let jobsRes: any = null;
         let interviewsRes: any = null;
-        let pendingActionsRes: any = null;
         let todosRes: any = null;
 
         await Promise.all([
-          api.get(`/analytics/employer/${user.id}`).then(res => { analyticsRes = res; }).catch(e => console.error("Error fetching analytics:", e)),
+          api.get(`/analytics/employer/${user.id}`).then(res => { analyticsRes = res; }).catch(e => {
+            console.error("Error fetching analytics:", e);
+            setAnalyticsError("Failed to load analytics");
+          }),
           api.get(`/jobs/company-managed/all`).then(res => { jobsRes = res; }).catch(e => console.error("Error fetching jobs:", e)),
           api.get(`/analytics/employer/${user.id}/interviews`).then(res => { interviewsRes = res; }).catch(e => console.error("Error fetching interviews:", e)),
-          api.get(`/company/pending-actions`).then(res => { pendingActionsRes = res; }).catch(e => console.error("Error fetching pending actions:", e)),
           api.get(`/company/todos`).then(res => { todosRes = res; }).catch(e => console.error("Error fetching todos:", e))
         ]);
 
@@ -490,15 +455,22 @@ export function CompanyDashboard() {
         }
 
         if (analyticsRes && analyticsRes.data?.success) {
-          const apps = analyticsRes.data.data.applicants || [];
-          const trend = analyticsRes.data.data.trendData || [];
-          const heldTasks = analyticsRes.data.data.heldCandidateTasks || [];
+          setAnalyticsError(null);
+          const data = analyticsRes.data.data;
+          const apps = data.applicants || [];
+          const trend = data.trendData || [];
+          const heldTasks = data.heldCandidateTasks || [];
           
+          if (data.scopeMetrics) setScopeMetrics(data.scopeMetrics);
+          if (data.hiredByPeriod) setHiredByPeriod(data.hiredByPeriod);
+          if (data.interviewsToday !== undefined) setInterviewsTodayCount(data.interviewsToday);
+          if (data.pendingActions) setPendingActionsList(data.pendingActions);
+
           setRealApplicants(apps);
           setHeldCandidateTasks(heldTasks);
           setTotalApplicantsCount(apps.length);
           
-          const inPipeline = apps.filter((a: any) => {
+          const inPipeline = data.scopeMetrics?.active?.inPipeline ?? apps.filter((a: any) => {
             const bucket = normalizeStageBucket(a);
             const job = filteredJobs.find((j: any) => j.id === a.job_id);
             const isJobOpen = job ? job.status === 'OPEN' : true;
@@ -510,20 +482,9 @@ export function CompanyDashboard() {
             setHistoricalTrend(trend);
           }
           
-          const now = new Date();
-          const hiredCount = apps.filter((a: any) => {
-            if (normalizeStageBucket(a) !== 'HIRED') return false;
-            const targetDateStr = a.hired_at;
-            if (!targetDateStr) return false;
-            let formattedDateStr = targetDateStr;
-            if (typeof formattedDateStr === 'string' && !formattedDateStr.includes('T') && !formattedDateStr.includes('Z')) {
-              formattedDateStr = formattedDateStr.replace(' ', 'T');
-            }
-            const resDate = new Date(formattedDateStr);
-            if (isNaN(resDate.getTime())) return true;
-            return resDate.getMonth() === now.getMonth() && resDate.getFullYear() === now.getFullYear();
-          }).length;
-          setHiredThisMonthCount(hiredCount);
+          setHiredThisMonthCount(data.hiredByPeriod?.thisMonth ?? 0);
+        } else if (analyticsRes && !analyticsRes.data?.success) {
+          setAnalyticsError(analyticsRes.data?.message || "Failed to load analytics");
         }
 
         if (interviewsRes && interviewsRes.data?.success) {
@@ -849,23 +810,38 @@ export function CompanyDashboard() {
           </div>
         </div>
 
-        {/* Interviews Today */}
+        {/* In Interview */}
         <div className="bg-white p-5 rounded-3xl border border-slate-100/80 shadow-sm flex flex-col justify-between hover:shadow-md transition-all">
           <div className="flex items-start justify-between w-full">
             <div className="w-10 h-10 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center shrink-0">
               <Calendar size={20} />
             </div>
+            <div className="flex items-center gap-1 bg-slate-50 p-0.5 rounded-lg border border-slate-100">
+              {(['active', 'ended', 'all'] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={(e) => { e.stopPropagation(); setInterviewCardFilter(f); }}
+                  className={`px-1.5 py-0.5 rounded-md text-[8px] font-extrabold uppercase tracking-wider transition-all cursor-pointer ${
+                    interviewCardFilter === f
+                      ? 'bg-orange-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600'
+                  }`}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="mt-4">
-            <span className="text-[11px] font-bold text-slate-400 block tracking-tight">Interviews Today</span>
+            <span className="text-[11px] font-bold text-slate-400 block tracking-tight">In Interview</span>
             <span className="text-2xl font-black text-slate-900 block mt-1">
-              {String(displayedInterviewsTodayCount).padStart(2, '0')}
+              {String(displayedInInterviewCount).padStart(2, '0')}
             </span>
             <span className="text-[9px] font-extrabold text-orange-600 mt-1.5 flex items-center gap-0.5 uppercase tracking-wide">
               <TrendingUp size={10} /> {
-                pendingInterviewsCount > 0
-                  ? `${pendingInterviewsCount} pending confirmation`
-                  : "Scheduled Today"
+                interviewsTodayCount > 0
+                  ? `${interviewsTodayCount} scheduled today`
+                  : "No interviews scheduled today"
               }
             </span>
           </div>
@@ -1137,14 +1113,16 @@ export function CompanyDashboard() {
                     return bucket !== 'REJECTED' && bucket !== 'HIRED';
                   });
 
-                  const autoCount = (waitingReviewCount > 0 ? 1 : 0) + 
-                                    (pendingAssessments > 0 ? 1 : 0) + 
-                                    (interviewsToday > 0 ? 1 : 0) + 
-                                    (pipelineCount > 0 ? 1 : 0) + 
-                                    (expiringSoonCount > 0 ? 1 : 0) + 
-                                    (offerFollowUpCount > 0 ? 1 : 0) + 
-                                    (endedJobCandidatesNeedingDecisions.length > 0 ? 1 : 0) +
-                                    heldCandidateTasks.length;
+                  const autoCount = pendingActionsList.length > 0 ? pendingActionsList.length : (
+                    (waitingReviewCount > 0 ? 1 : 0) + 
+                    (pendingAssessments > 0 ? 1 : 0) + 
+                    (interviewsToday > 0 ? 1 : 0) + 
+                    (pipelineCount > 0 ? 1 : 0) + 
+                    (expiringSoonCount > 0 ? 1 : 0) + 
+                    (offerFollowUpCount > 0 ? 1 : 0) + 
+                    (endedJobCandidatesNeedingDecisions.length > 0 ? 1 : 0) +
+                    heldCandidateTasks.length
+                  );
                   
                   const manualCount = todos.filter(t => t.status !== 'COMPLETED').length;
                   return pendingTab === 'pending' ? autoCount : manualCount;
@@ -1221,87 +1199,99 @@ export function CompanyDashboard() {
                     return bucket !== 'REJECTED' && bucket !== 'HIRED';
                   });
 
-                  const systemActionsList: any[] = [];
+                  const systemActionsList: any[] = pendingActionsList.length > 0 ? [...pendingActionsList] : [];
 
-                  if (waitingReviewCount > 0) {
-                    systemActionsList.push({
-                      id: 'sys-waiting-review',
-                      title: `${waitingReviewCount} application${waitingReviewCount > 1 ? 's' : ''} waiting for review`,
-                      sub: 'Needs Screening',
-                      type: 'Review',
-                      actionPath: '/company/applicants'
+                  if (pendingActionsList.length === 0) {
+                    if (waitingReviewCount > 0) {
+                      systemActionsList.push({
+                        id: 'sys-waiting-review',
+                        title: `${waitingReviewCount} application${waitingReviewCount > 1 ? 's' : ''} waiting for review`,
+                        sub: 'Needs Screening',
+                        type: 'Review',
+                        actionPath: '/company/applicants'
+                      });
+                    }
+
+                    if (pendingAssessments > 0) {
+                      systemActionsList.push({
+                        id: 'sys-pending-assessments',
+                        title: `${pendingAssessments} assessment${pendingAssessments > 1 ? 's' : ''} pending verification`,
+                        sub: 'Awaiting evaluation',
+                        type: 'Assessment',
+                        actionPath: '/company/assessments'
+                      });
+                    }
+
+                    if (interviewsToday > 0) {
+                      systemActionsList.push({
+                        id: 'sys-interviews-today',
+                        title: `${interviewsToday} interview${interviewsToday > 1 ? 's' : ''} scheduled today`,
+                        sub: 'Requires preparation',
+                        type: 'Interview',
+                        actionPath: '/company/interviews'
+                      });
+                    }
+
+                    if (pipelineCount > 0) {
+                      systemActionsList.push({
+                        id: 'sys-pipeline-active',
+                        title: `${pipelineCount} candidate${pipelineCount > 1 ? 's' : ''} active in hiring pipeline`,
+                        sub: 'Keep moving forward',
+                        type: 'Pipeline',
+                        actionPath: '/company/pipeline'
+                      });
+                    }
+
+                    if (expiringSoonCount > 0) {
+                      systemActionsList.push({
+                        id: 'sys-jobs-expiring',
+                        title: `${expiringSoonCount} job posting${expiringSoonCount > 1 ? 's' : ''} expiring soon`,
+                        sub: 'Renew or review applicants',
+                        type: 'Job',
+                        actionPath: '/company/jobs'
+                      });
+                    }
+
+                    if (offerFollowUpCount > 0) {
+                      systemActionsList.push({
+                        id: 'sys-offer-followup',
+                        title: `${offerFollowUpCount} candidate selection${offerFollowUpCount > 1 ? 's' : ''} pending offer details`,
+                        sub: 'Offer Stage',
+                        type: 'Offer',
+                        actionPath: '/company/pipeline'
+                      });
+                    }
+
+                    if (endedJobCandidatesNeedingDecisions.length > 0) {
+                      systemActionsList.push({
+                        id: 'sys-ended-job-decisions',
+                        title: `${endedJobCandidatesNeedingDecisions.length} candidate${endedJobCandidatesNeedingDecisions.length > 1 ? 's' : ''} from an ended job still require shortlist or rejection decisions.`,
+                        sub: 'Ended Job decisions',
+                        type: 'Decision',
+                        actionPath: '/company/applicants'
+                      });
+                    }
+
+                    heldCandidateTasks.forEach((task, idx) => {
+                      systemActionsList.push({
+                        id: `sys-held-${idx}`,
+                        title: task.title,
+                        sub: task.sub || 'Action Required',
+                        type: 'Held',
+                        actionPath: task.actionPath || '/company/applicants'
+                      });
                     });
                   }
 
-                  if (pendingAssessments > 0) {
-                    systemActionsList.push({
-                      id: 'sys-pending-assessments',
-                      title: `${pendingAssessments} assessment${pendingAssessments > 1 ? 's' : ''} pending verification`,
-                      sub: 'Awaiting evaluation',
-                      type: 'Assessment',
-                      actionPath: '/company/assessments'
-                    });
+                  if (analyticsError) {
+                    return (
+                      <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+                        <p className="text-xs text-rose-600 font-extrabold uppercase tracking-widest">
+                          {analyticsError}
+                        </p>
+                      </div>
+                    );
                   }
-
-                  if (interviewsToday > 0) {
-                    systemActionsList.push({
-                      id: 'sys-interviews-today',
-                      title: `${interviewsToday} interview${interviewsToday > 1 ? 's' : ''} scheduled today`,
-                      sub: 'Requires preparation',
-                      type: 'Interview',
-                      actionPath: '/company/interviews'
-                    });
-                  }
-
-                  if (pipelineCount > 0) {
-                    systemActionsList.push({
-                      id: 'sys-pipeline-active',
-                      title: `${pipelineCount} candidate${pipelineCount > 1 ? 's' : ''} active in hiring pipeline`,
-                      sub: 'Keep moving forward',
-                      type: 'Pipeline',
-                      actionPath: '/company/pipeline'
-                    });
-                  }
-
-                  if (expiringSoonCount > 0) {
-                    systemActionsList.push({
-                      id: 'sys-jobs-expiring',
-                      title: `${expiringSoonCount} job posting${expiringSoonCount > 1 ? 's' : ''} expiring soon`,
-                      sub: 'Renew or review applicants',
-                      type: 'Job',
-                      actionPath: '/company/jobs'
-                    });
-                  }
-
-                  if (offerFollowUpCount > 0) {
-                    systemActionsList.push({
-                      id: 'sys-offer-followup',
-                      title: `${offerFollowUpCount} candidate selection${offerFollowUpCount > 1 ? 's' : ''} pending offer details`,
-                      sub: 'Offer Stage',
-                      type: 'Offer',
-                      actionPath: '/company/pipeline'
-                    });
-                  }
-
-                  if (endedJobCandidatesNeedingDecisions.length > 0) {
-                    systemActionsList.push({
-                      id: 'sys-ended-job-decisions',
-                      title: `${endedJobCandidatesNeedingDecisions.length} candidate${endedJobCandidatesNeedingDecisions.length > 1 ? 's' : ''} from an ended job still require shortlist or rejection decisions.`,
-                      sub: 'Ended Job decisions',
-                      type: 'Decision',
-                      actionPath: '/company/applicants'
-                    });
-                  }
-
-                  heldCandidateTasks.forEach((task, idx) => {
-                    systemActionsList.push({
-                      id: `sys-held-${idx}`,
-                      title: task.title,
-                      sub: task.sub || 'Action Required',
-                      type: 'Held',
-                      actionPath: task.actionPath || '/company/applicants'
-                    });
-                  });
 
                   if (systemActionsList.length === 0) {
                     return (

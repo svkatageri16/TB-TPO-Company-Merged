@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import api from '../../services/api.ts';
-import { Search, Filter, Download, History } from 'lucide-react';
+import { Search, Download, History } from 'lucide-react';
 import { CandidateTable } from '../../components/company/CandidateTable.tsx';
 import { CandidateDetailModal } from '../../components/company/CandidateDetailModal.tsx';
 import { ApplicantHistoryModal } from '../../components/company/ApplicantHistoryModal.tsx';
@@ -11,6 +11,7 @@ export function ApplicantsPage() {
   const { user } = useAuth();
   const [applicants, setApplicants] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<any>(null);
   
   // History Modal State
@@ -23,26 +24,44 @@ export function ApplicantsPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
+  const isFetchingRef = useRef(false);
+
+  const fetchApplicants = async () => {
+    if (!user?.id || isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    try {
+      setLoading(true);
+      setError(null);
+      const res = await api.get(`/analytics/employer/${user.id}`);
+      if (res.data && res.data.success) {
+        setApplicants(res.data.data.applicants || []);
+      } else {
+        setError(res.data?.message || 'Failed to fetch applicants');
+      }
+    } catch (e: any) {
+      console.error(e);
+      setError(e?.response?.data?.message || e?.message || 'Failed to fetch applicants');
+    } finally {
+      setLoading(false);
+      isFetchingRef.current = false;
+    }
+  };
+
   useEffect(() => {
     if (user?.id) {
       fetchApplicants();
     }
   }, [user?.id]);
 
-  const fetchApplicants = async () => {
-    if (!user?.id) return;
-    try {
-      setLoading(true);
-      const res = await api.get(`/analytics/employer/${user.id}`);
-      if (res.data.success) {
-        setApplicants(res.data.data.applicants || []);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    const handlePipelineUpdate = () => {
+      fetchApplicants();
+    };
+    window.addEventListener('vega:pipeline-updated', handlePipelineUpdate);
+    return () => {
+      window.removeEventListener('vega:pipeline-updated', handlePipelineUpdate);
+    };
+  }, [user?.id]);
 
   // Search filtering
   const filteredApplicants = applicants.filter(app => {
@@ -144,6 +163,20 @@ export function ApplicantsPage() {
         <div className="py-24 text-center text-slate-400 text-xs font-black uppercase tracking-widest flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
           Loading company applicant list...
+        </div>
+      ) : error ? (
+        <div className="bg-rose-50 border border-rose-200 rounded-[30px] p-8 text-center my-6 space-y-4">
+          <p className="text-sm font-bold text-rose-700">{error}</p>
+          <button
+            onClick={fetchApplicants}
+            className="px-5 py-2.5 bg-rose-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-rose-700 transition-all cursor-pointer shadow-sm"
+          >
+            Retry
+          </button>
+        </div>
+      ) : filteredApplicants.length === 0 ? (
+        <div className="bg-white border border-slate-100 rounded-[30px] p-12 text-center text-slate-400 my-6">
+          <p className="text-sm font-bold uppercase tracking-wider">No applicants found for the selected scope.</p>
         </div>
       ) : (
         <div className="space-y-6">
@@ -251,3 +284,4 @@ export function ApplicantsPage() {
     </div>
   );
 }
+
